@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>家悦K歌 点歌系统</title>
+<style>
+  :root { --gold: #e8c15a; --deep: #12081f; --text: #b9a3d6; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    min-height: 100vh;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 2.6rem; padding: 2rem 1rem;
+    background: radial-gradient(ellipse at top, #2a1646 0%, var(--deep) 58%, #0a050f 100%);
+    color: #fff;
+    font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  }
+  header { text-align: center; }
+  .logo {
+    font-size: 2.6rem; font-weight: 800; letter-spacing: .35em;
+    color: var(--gold); text-shadow: 0 0 26px rgba(232,193,90,.45);
+  }
+  .logo small {
+    display: block; margin-top: .8rem;
+    font-size: .82rem; font-weight: 400; letter-spacing: .5em;
+    color: var(--text);
+  }
+  .cards { display: flex; flex-wrap: wrap; justify-content: center; gap: 1.6rem; max-width: 980px; }
+  .card {
+    width: 250px; padding: 2.1rem 1.3rem 1.8rem;
+    border-radius: 18px; text-align: center; text-decoration: none; color: #fff;
+    background: linear-gradient(160deg, #241338, #180b28);
+    border: 1px solid rgba(232,193,90,.22);
+    transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+  }
+  .card:hover {
+    transform: translateY(-6px);
+    border-color: var(--gold);
+    box-shadow: 0 14px 38px rgba(0,0,0,.5), 0 0 24px rgba(232,193,90,.28);
+  }
+  .card .icon {
+    width: 60px; height: 60px; margin: 0 auto 1.1rem;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 14px; font-size: 1.35rem; font-weight: 800;
+    color: var(--gold); letter-spacing: .05em;
+    background: rgba(232,193,90,.1);
+    border: 1px solid rgba(232,193,90,.4);
+  }
+  .card h2 { font-size: 1.28rem; letter-spacing: .18em; margin-bottom: .55rem; }
+  .card p { font-size: .82rem; color: var(--text); line-height: 1.75; }
+  footer { color: #6d5a8c; font-size: .78rem; letter-spacing: .25em; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="logo">家悦K歌<small>JIAYUE KTV · 局域网点歌系统</small></div>
+  </header>
+  <main class="cards">
+    <a class="card" href="/tv/">
+      <div class="icon">TV</div>
+      <h2>TV 播放端</h2>
+      <p>大屏自动播放点歌队列<br>适合电视 / 投影大屏</p>
+    </a>
+    <a class="card" href="/pad/">
+      <div class="icon">P</div>
+      <h2>点歌台</h2>
+      <p>歌名 / 歌手 / 分类 / 热歌<br>平板触屏点歌主界面</p>
+    </a>
+    <a class="card" href="/m/">
+      <div class="icon">M</div>
+      <h2>手机点歌</h2>
+      <p>拼音 / 歌手 / 分类点歌<br>扫码即用，无需安装</p>
+    </a>
+    <a class="card" href="/admin/">
+      <div class="icon">A</div>
+      <h2>曲库管理</h2>
+      <p>扫描曲库、管理歌曲<br>管理员专属入口</p>
+    </a>
+  </main>
+  <footer>JIAYUE KTV · 局域网内访问</footer>
+</body>
+</html>

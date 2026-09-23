@@ -1,0 +1,1614 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<script>
+// Bug6修复：部分电视/机顶盒内置浏览器的内核比较老，对 <meta name="viewport"> 的
+// "width=device-width" 支持不完整或干脆不生效——网页依然按某个固定的、比实际
+// 物理分辨率小的虚拟画布(常见是1280或更小)渲染，剩下的屏幕区域完全不属于渲染
+// 表面，直接留空/发黑。同一个页面在遵循标准的电脑浏览器里完全正常，恰恰说明
+// 问题出在电视浏览器内核对 viewport meta 的解析上，不是页面布局本身的问题。
+// 用 JS 直接读 window.innerWidth/innerHeight（浏览器真实汇报的可视区域尺寸），
+// 强制把 html 元素的宽高显式设成这个像素值，不再依赖 vw/vh/百分比这些间接
+// 单位——这些单位最终还是要靠浏览器自己去正确计算"视口"是多大，遇到不遵循
+// 标准的内核就会算错；而 innerWidth/innerHeight 是浏览器能直接汇报的原始值，
+// 用它来强制撑满，兼容性明显更好。首次进入、以及窗口尺寸变化(比如TV分辨率
+// 切换、旋转)时都会重新校正一次。
+//
+// Bug6追查补充（二级菜单/弹窗位置不对 + 空闲态"家悦K歌"占位符位置不对）：
+// 之前只对 #home 做了这层修正（把它的 width/height 用行内样式直接改成量出来
+// 的真实像素值），别的弹层完全没被修正过——但根因其实比"视口测量"更底层：
+// 这台电视浏览器的内核太老，压根不认识 CSS 的 inset 简写属性（inset 是较新的
+// CSS 特性，老内核会把 `inset:0` 当成无法识别的声明直接忽略，top/right/
+// bottom/left 全部保持默认值 auto，元素自然不会撑满/贴边，而是回退到"缩到
+// 内容大小"或"按静态流定位"，这跟"视口量错了"在肉眼看来是同一种"错位"症状，
+// 很容易被误判成同一个问题，实际上是两回事）。#home 当初"意外"被修好，只是
+// 因为那次修的是行内 style.width/height，根本没用到 inset，绕开了这个坑；
+// 其余所有二级菜单/弹窗（.pd、.pd-full）、全屏相关层（#fs-tap、#fs-ov）、
+// 背景层(#bg)、全屏视频(.video-fs)，只要还在用 `inset:0`，在这台电视上就都
+// 没有真正撑满/贴边——这才是本次反馈里"到处都跑位"的真正统一根因。
+// 空闲态占位符(#now-idle)是另一种情况：它是 position:absolute 相对自己的
+// 定位父级(#now-panel，一个普通的 grid 单元格)撑满，不受这台电视的"viewport
+// 测量"问题影响，但同样因为用了 inset:0 这个不被支持的简写而没法贴边，
+// 处理方式一致：换成长写属性即可。
+// 双管齐下修复：① 下方 <style> 里把这些选择器的 inset:0 全部换成
+// top:0;right:0;bottom:0;left:0 四个独立的长写属性——这四个是 CSS2.1 时代就有
+// 的老属性，任何内核都认识，不存在"新特性不支持"的风险；② 光有长写属性对
+// #bg/#home/#fs-tap/#fs-ov/.pd/.pd-full 这些普通 <div> 已经够了，但全屏视频
+// (.video-fs) 是个例外——<video> 属于"可替换元素"，即使四个方向都顶到 0，
+// 只要没有显式 width/height，不少内核仍会回退成默认的 300×150 固有尺寸，
+// 光换长写属性不够，必须像 #home 一样再用 JS 显式量出来的像素值强行赋值
+// (下面 fitViewport() 里统一处理，因为需要动态读 window.innerWidth/Height，
+// 纯 CSS 做不到)。两层修复分别针对"CSS 特性不支持"和"可替换元素固有尺寸
+// 回退"两个不同的坑，缺一个都不够。
+// 高DPI横屏(电视)缩放补偿说明（本次新增）：
+// 实测反馈"横屏(电视)模式在 320dpi 设备上 UI 明显偏大，240dpi 设备上刚好合适"。
+// 根因：这批电视/机顶盒浏览器内核会按系统密度(dpi)把每个 CSS px 映射成不同数量
+// 的物理像素——240dpi 对应的 devicePixelRatio(以下简称DPR) 约 1.5，320dpi 对应
+// 的 DPR 约 2.0，页面里的字号/间距/按钮尺寸全部是写死的 px 值，DPR 越大同一批
+// px 在物理屏幕上占的实际面积就越大，这才是"320dpi 上明显偏大"的真正原因，
+// 不是布局逻辑本身的问题。
+// 修复思路：以"240dpi(DPR≈1.5)下的观感"为基准，在其它 DPR 的设备上反向补偿一个
+// 缩放系数 scale = 基准DPR / 实际DPR，让最终渲染出来的物理大小始终对齐 240dpi
+// 的效果（DPR 更高时 scale<1，整体按比例缩小；DPR 更低时 scale>1，整体放大）。
+// 只在横屏(电视)布局下生效——竖屏(手机)有系统级的 viewport/DPI 处理，本身
+// 观感是正常的，不需要也不应该补偿。
+// 具体做法：不用 CSS transform:scale 直接套在 #home 上（那样只能覆盖 #home，
+// 覆盖不到同级的 .pd/.pd-full 等弹层），而是套在 <body> 上——给 position:fixed
+// 的元素建立新的包含块是 transform 的标准行为（CSS Transforms 规范），body 一
+// 缩放，所有以 body 为包含块、按虚拟画布铺满的 fixed 元素（#bg/#home/#fs-tap/
+// #fs-ov/.pd/.pd-full）会跟着整体等比缩放，覆盖全部模块，不用逐个补丁。
+// 具体数值：先把 body 的宽高设成"虚拟画布"尺寸 = 真实视口尺寸 / scale（scale<1
+// 时虚拟画布更大，留出足够空间让内部元素按原始 px 正常排布），再用
+// transform:scale(scale) 把整个 body 视觉上压缩/放大回真实视口大小——两步换算
+// 后，物理呈现的大小就固定对齐 240dpi 基准，不随实际 DPR 变化而跑偏。
+(function () {
+  var BASELINE_DPR = 1.5;   // 基准：240dpi 设备的典型 devicePixelRatio，观感"刚好合适"
+  var SCALE_MIN = 0.55, SCALE_MAX = 1.6; // 极端 DPR 下的安全夹取范围，避免布局失控
+  // 设备类型识别：DPI 缩放补偿只是为了修正"电视/机顶盒内置浏览器"这一类场景，
+  // 电脑上用普通网页浏览器(Chrome/Edge/Firefox等)打开同一个页面时，浏览器自身
+  // 对 DPI/缩放已经处理得很好，不需要也不应该再叠加一层补偿——叠加之后反而会
+  // 把电脑网页版的 UI 显得过大。这里做一次一次性判断并缓存结果：
+  //   ① 先看 UA 里有没有电视/机顶盒/智能电视系统的标识（Android、SmartTV、
+  //      Tizen(三星电视)、WebOS(LG电视)、AFT系列(Fire TV)、BRAVIA(索尼电视)、
+  //      Hisense、NetCast、VIDAA、CrKey(Chromecast) 等）——命中就判定为电视；
+  //   ② 再看 UA 里有没有常见桌面操作系统标识（Windows NT/Macintosh/X11 Linux）
+  //      ——命中就判定为电脑网页；
+  //   ③ 两者都没命中(UA 被裁剪/伪装等极端情况)时，退回用输入设备类型兜底：
+  //      电脑网页通常有精确指针(鼠标)且可悬停(hover:hover)+(pointer:fine)，
+  //      电视遥控器/纯触摸屏一般是 coarse 或 none，命中就按电脑网页处理，
+  //      否则按电视处理（保守起见，无法判断时优先保证电视端不失真）。
+  var _isDesktopBrowser = null;
+  function isDesktopBrowser() {
+    if (_isDesktopBrowser !== null) return _isDesktopBrowser;
+    var ua = navigator.userAgent || '';
+    var tvMarkers = /Android|SmartTV|GoogleTV|Tizen|WebOS|AFT[A-Z]?|BRAVIA|Hisense|NetCast|VIDAA|CrKey/i;
+    var desktopMarkers = /Windows NT|Macintosh|X11;\s*Linux/i;
+    if (tvMarkers.test(ua)) { _isDesktopBrowser = false; }
+    else if (desktopMarkers.test(ua)) { _isDesktopBrowser = true; }
+    else {
+      var finePointer = false;
+      try { finePointer = window.matchMedia && window.matchMedia('(hover:hover) and (pointer:fine)').matches; } catch (e) {}
+      _isDesktopBrowser = !!finePointer;
+    }
+    return _isDesktopBrowser;
+  }
+  function computeScale() {
+    // 只有横屏(电视)才可能做 DPI 补偿；竖屏(手机)恒定不缩放
+    var layout = document.documentElement.getAttribute('data-layout');
+    if (layout === 'mobile') return 1;
+    // 电脑网页版：沿用之前的界面（不叠加 DPI 补偿，保持原始设计尺寸）
+    if (isDesktopBrowser()) return 1;
+    // 电视/机顶盒：按 240dpi 基准做 DPI 补偿
+    var dpr = window.devicePixelRatio || 1;
+    if (!dpr || !isFinite(dpr)) return 1;
+    var s = BASELINE_DPR / dpr;
+    if (!isFinite(s) || s <= 0) return 1;
+    return Math.max(SCALE_MIN, Math.min(SCALE_MAX, s));
+  }
+  function fitViewport() {
+    var w = window.innerWidth, h = window.innerHeight;
+    if (!w || !h) return;
+    var html = document.documentElement, body = document.body;
+    var scale = computeScale();
+    window.__uiScale = scale; // 供 fitNowPanel() 等"先测量、再按测量结果设定新样式"的逻辑换算回补偿前的坐标系
+    // 虚拟画布尺寸：scale<1(高DPI，需要整体缩小)时画布比真实视口更大，
+    // 让内部各模块能按原始 px 正常排布，最后统一靠 transform 缩回真实视口大小；
+    // scale===1 时虚拟画布等于真实视口，等价于完全不缩放，兼容原有电视/竖屏表现。
+    var vw = w / scale, vh = h / scale;
+    html.style.width = w + 'px'; html.style.height = h + 'px';
+    if (body) {
+      body.style.width = vw + 'px'; body.style.height = vh + 'px';
+      body.style.transformOrigin = '0 0';
+      body.style.transform = (scale === 1) ? 'none' : ('scale(' + scale + ')');
+    }
+    // 通用撑满修正：把所有"应该铺满整屏"的浮层一次性显式撑到虚拟画布尺寸——
+    // 之前只修了 #home 一个，其余用同样 position:fixed 写法的二级菜单/
+    // 弹窗(.pd 系列弹窗、.pd-full 系列二级全屏页)、全屏遮罩/点击层
+    // (#fs-tap、#fs-ov)、背景层(#bg) 全都没被修正到，这里统一处理一次，以后
+    // 新增浮层只要复用这几个既有选择器就自动被覆盖，不用每次都单独打补丁。
+    // 用 vw/vh(虚拟画布尺寸)而不是 w/h(真实视口尺寸)，是因为这些元素现在的
+    // 包含块是被 transform 缩放过的 body，撑满"body 的虚拟画布"才能在缩放后
+    // 严丝合缝地铺满真实视口；scale===1 时 vw/vh 就等于 w/h，行为和之前完全一致。
+    document.querySelectorAll('#bg, #home, #fs-tap, #fs-ov, .pd, .pd-full').forEach(function (el) {
+      el.style.width = vw + 'px';
+      el.style.height = vh + 'px';
+    });
+    // 全屏播放视频比较特殊：className 是在 enterFullscreen()/exitKtvFullscreen()
+    // 里整体替换的('video-home'<->'video-fs')，不能常驻撑满，否则挂在首页预览
+    // 小窗里的 <video> 也会被强行拉伸成全屏；只在真的进入 .video-fs 状态时才
+    // 修正。<video> 是"可替换元素"，即使 top/right/bottom/left 都设成0，只要
+    // 没有显式 width/height，不少内核仍会回退成默认的 300×150 固有尺寸——这
+    // 也是为什么当初只在 .video-fs 上补 inset 的长写属性还不够，必须像
+    // #home 一样显式赋像素值（同样用虚拟画布尺寸 vw/vh，原因同上）。
+    var v = document.getElementById('ktv-video');
+    if (v && v.classList.contains('video-fs')) { v.style.width = vw + 'px'; v.style.height = vh + 'px'; }
+  }
+  window.__fitViewport = fitViewport; // 供 enterFullscreen() 在切换的瞬间立即调用一次，不用等下一次 resize/定时校正
+  fitViewport();
+  document.addEventListener('DOMContentLoaded', fitViewport);
+  window.addEventListener('resize', fitViewport);
+  window.addEventListener('orientationchange', fitViewport);
+  // 有些电视浏览器首屏渲染时 innerWidth/innerHeight 还没就绪或被短暂上报错误值，
+  // 稍延迟再校正一次兜底。
+  setTimeout(fitViewport, 300);
+  setTimeout(fitViewport, 1000);
+})();
+</script>
+<script>
+// ============================================================
+// 模块：自适应布局检测（Layout Detector）
+// ------------------------------------------------------------
+// 主界面被拆成了几个独立模块（头部/MV播放/控制按钮/歌名歌星常唱收藏/已点队列），
+// 具体怎么拼装这些模块，由当前可视区域的宽高比决定：
+//   竖屏（高 > 宽，典型如手机浏览器直接打开本页）  -> data-layout="mobile"
+//   横屏（宽 >= 高，典型如电视/机顶盒/横屏平板）    -> data-layout="tv"（即原有电视版布局）
+// 只依赖 window.innerWidth/innerHeight 的实际比例判断，不做任何 UA 嗅探/设备型号
+// 黑白名单——同一套规则对电视浏览器、手机浏览器、甚至同一浏览器旋转屏幕都成立。
+// 和上面的 fitViewport 一样必须在 <head> 阶段同步执行并尽早跑第一次，避免先按
+// 错误布局渲染一帧、随后再切换造成的闪烁(FOUC)。下面各模块的 CSS 全部通过
+// html[data-layout="mobile"] / html[data-layout="tv"] 这两个属性选择器来分流，
+// 不用 JS 直接操作各模块内部样式，方便以后单独增删某个模块的响应式规则。
+(function () {
+  function detectLayout() {
+    var w = window.innerWidth, h = window.innerHeight;
+    if (!w || !h) return;
+    var layout = (h > w) ? 'mobile' : 'tv';
+    if (document.documentElement.getAttribute('data-layout') !== layout) {
+      document.documentElement.setAttribute('data-layout', layout);
+      // 布局模式切换后，MV 框(3:2)等依赖测量像素的模块需要重新计算一次，
+      // 这两个函数在下方 <script> 里定义，可能还没加载完，做个存在性判断兜底。
+      if (window.__fitViewport) window.__fitViewport();
+      if (window.fitNowPanel) window.fitNowPanel();
+    }
+  }
+  window.__detectLayout = detectLayout;
+  detectLayout();
+  document.addEventListener('DOMContentLoaded', detectLayout);
+  window.addEventListener('resize', detectLayout);
+  window.addEventListener('orientationchange', detectLayout);
+  setTimeout(detectLayout, 300);
+  setTimeout(detectLayout, 1000);
+})();
+</script>
+<title>家悦K歌</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js" defer></script>
+<style>
+:root{
+  --bg:#07071a;--navy:#0d0d2b;
+  --ac:#c736f7;--ac2:#36d9f7;--pink:#ff4f9b;
+  --text:#fff;--sub:rgba(255,255,255,.5);
+  --g1:linear-gradient(135deg,#ff4f9b,#ff2255);
+  --g2:linear-gradient(135deg,#ff8c42,#ffd000);
+  --g3:linear-gradient(135deg,#8e44f7,#c736f7);
+  --g5:linear-gradient(135deg,#f73669,#ff4f9b);
+  --g6:linear-gradient(135deg,#c736f7,#7b2cf7);
+  --g7:linear-gradient(135deg,#1a4bff,#36d9f7);
+}
+/* 内置圆体：方正准圆(GBK)。字体文件较大(~9.7MB)，font-display:swap 让文字先用
+   兜底字体正常显示，字体加载完成后再无感替换，不会阻塞首屏渲染。 */
+@font-face{font-family:"FZZhunYuan";src:url("fonts/FZZhunYuan-GBK.ttf") format("truetype");font-weight:normal;font-style:normal;font-display:swap}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-user-select:none;user-select:none}
+html,body{width:100%;height:100%;width:100vw;height:100vh;overflow:hidden;background:var(--bg);color:var(--text);
+  font-family:"FZZhunYuan","Yuanti SC","STYuanti-SC","HarmonyOS Sans SC","MiSans","PingFang SC","Microsoft YaHei",sans-serif}
+#bg{position:fixed;top:0;right:0;bottom:0;left:0;pointer-events:none;z-index:0;
+  background:radial-gradient(circle at 10% 50%,rgba(199,54,247,.12),transparent 40%),
+             radial-gradient(circle at 90% 20%,rgba(54,169,247,.12),transparent 40%)}
+/* 视频 */
+.video-home{position:absolute;top:0;right:0;bottom:0;left:0;width:100%;height:100%;object-fit:contain;display:block;z-index:1;pointer-events:none}
+/* 加载中覆盖层：盖住视频区域，取代加载阶段浏览器可能自行显示的硕大默认播放图标。
+   z-index 比 .video-home 高，且和 #now-panel 同属一个合成层(见 #now-panel 的
+   transform:translateZ(0))，能正常按 DOM 层叠顺序盖在视频上面。 */
+#video-loading{position:absolute;top:0;right:0;bottom:0;left:0;z-index:4;
+  display:none;flex-direction:column;align-items:center;justify-content:center;
+  gap:14px;background:#000}
+#video-loading.show{display:flex}
+.vl-spinner{width:42px;height:42px;border-radius:50%;
+  border:4px solid rgba(255,255,255,.15);border-top-color:var(--ac2);
+  animation:vlSpin .8s linear infinite}
+@keyframes vlSpin{to{transform:rotate(360deg)}}
+.vl-text{font-size:17px;color:rgba(255,255,255,.6);letter-spacing:1px}
+.video-fs{position:fixed;top:0;right:0;bottom:0;left:0;object-fit:contain;z-index:50;background:#000;pointer-events:none}
+/* HOME */
+#home{position:fixed;top:0;right:0;bottom:0;left:0;z-index:2;display:flex;flex-direction:column}
+/* ============ 模块：头部 HEADER（标题+搜索+已点+信号+时间） ============ */
+#topbar{display:flex;align-items:center;padding:10px 16px 8px;flex-shrink:0;
+  background:rgba(5,5,20,.88);backdrop-filter:blur(16px);border-bottom:1px solid rgba(255,255,255,.07)}
+.logo{font-size:26px;font-weight:900;letter-spacing:1px;margin-right:6px;flex-shrink:0;
+  font-family:"PingFang SC","Microsoft YaHei",sans-serif;
+  background:linear-gradient(135deg,var(--ac),var(--ac2));-webkit-background-clip:text;background-clip:text;color:transparent}
+.nbi{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex-shrink:0}
+.nbi svg{width:18px;height:18px;display:block}
+.nb{display:flex;align-items:center;padding:6px 10px;border-radius:999px;
+  border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);
+  font-size:16px;cursor:pointer;transition:.2s;white-space:nowrap;flex-shrink:0;color:#fff;
+  outline:none;-webkit-tap-highlight-color:transparent}
+.nb:hover,.nb[data-f].focused{border-color:var(--ac);background:rgba(199,54,247,.25);color:var(--ac);transform:scale(1.06)}
+.nb.act{background:var(--g6);border-color:transparent;color:#fff}
+.badge{background:var(--pink);color:#fff;border-radius:999px;padding:0 5px;font-size:14px}
+/* 右上角信号图标：反映与后端 WebSocket 的连接状态 */
+.conn-badge{display:flex;align-items:center;padding:6px 10px;border-radius:999px;
+  border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);
+  font-size:16px;flex-shrink:0;transition:.25s;white-space:nowrap}
+.conn-badge.ok{border-color:rgba(60,220,120,.4);color:#3cdc78;background:rgba(60,220,120,.12)}
+.conn-badge.bad{border-color:rgba(255,79,155,.45);color:var(--pink);background:rgba(255,79,155,.14);
+  animation:connPulse 1.3s ease-in-out infinite}
+@keyframes connPulse{0%,100%{opacity:1}50%{opacity:.45}}
+/* 右上角时钟：时间(大)+日期/星期(小)，深紫渐变圆角卡片 */
+#clock-badge{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:5px 16px 6px;border-radius:14px;flex-shrink:0;line-height:1.3;
+  background:linear-gradient(135deg,rgba(123,44,247,.5),rgba(13,13,43,.65));
+  border:1px solid rgba(255,255,255,.12)}
+#clock-time{font-size:24px;font-weight:800;color:#fff;letter-spacing:.5px}
+#clock-date{font-size:14px;color:rgba(255,255,255,.65)}
+.sp{flex:1}
+/* ============ 主界面布局容器（下辖 MV/控制按钮/歌名歌星常唱收藏/已点队列 四个模块） ============
+   横屏(TV)下是三栏网格：MV播放列 | 歌名歌星常唱收藏卡片列 | 已点队列列；
+   竖屏(手机)下改成单列纵向堆叠，已点队列模块隐藏（改由头部"已点"按钮唤出弹层），
+   具体切换规则见下方"响应式：竖屏(手机)/横屏(电视)布局切换"一节。 */
+#grid{flex:1;display:grid;grid-template-columns:3fr 1.2fr 1.3fr;gap:10px;padding:10px 16px 8px;min-height:0}
+/* 播放区：now-panel 现在和下方的 MV 控制条一起放在 #now-col 这个纵向flex容器里，
+   #now-col 本身才是 #grid 的第一列格子（原来 #now-panel 直接是列格子，现在让位给
+   #now-col，自己变成里面的一个 flex:1 子项，把底部空间让给控制条）*/
+/* ============ 模块：MV 播放（含扫码点歌角标） ============ */
+#now-col{display:flex;flex-direction:column;gap:10px;min-height:0;position:relative;z-index:1}
+#now-panel{position:relative;border-radius:16px;overflow:hidden;background:#000;cursor:pointer;
+  /* 强制这个视频容器单独成一个合成层：部分电视浏览器内核对 <video> 走硬件解码叠加层
+     (hardware overlay)，会无视普通元素的 z-index/DOM顺序、始终盖在最上层——这是
+     "歌名等按钮聚焦放大被MV框遮挡"的真正成因。转成合成层能让多数内核放弃硬件叠加层
+     直通、回到正常按层叠顺序渲染的路径。*/
+  transform:translateZ(0)}
+/* MV框可以被遥控器选中：聚焦态放大+提亮，不用描边框，选中后按OK等价于点击进入全屏 */
+#now-panel[data-f].focused{transform:translateZ(0) scale(1.015);filter:brightness(1.15) saturate(1.15)}
+/* MV下方大按钮控制条：均衡器/原伴唱/音量-/暂停/音量+/切歌/重唱，纯白线条图标+下方文字，
+   风格与全屏控制层的 .ob 按钮统一：加边框+背景色块+更大的间距，聚焦/悬停/选中态
+   都是背景色块+边框变色+放大。
+   #mv-ctrl 用 flex:1 接住 #now-panel 定高(3:2)后空出来的剩余空间，图标/文字统一
+   放大，所有按钮图标同一尺寸(之前暂停键图标比别的大，会导致文字高度对不齐)。*/
+/* Bug修复：MV下方按钮改成强制单行、不再自动换行——7个按钮改用可收缩的 flex
+   宽度(而不是固定 width:100px+flex-shrink:0)，屏幕较窄时整排等比缩窄，始终
+   保持一行。这样也顺带修好了"按钮条底部和收藏卡片底部没对齐"：以前一旦换行成
+   2行，#mv-ctrl 的实际内容高度会超出 flex:1 分到的那份高度，把整个 #now-col
+   撑得比 #mid-cards 更高，两栏底部就对不齐了；保证单行后内容高度不会超出分配
+   的空间，两栏底部通过 #grid 本身的拉伸(stretch)自然对齐，不需要额外补样式。 */
+/* ============ 模块：控制按钮（均衡器/原伴唱/音量-/暂停/音量+/切歌/重唱） ============ */
+#mv-ctrl{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:2px 4px}
+.mvbtn{display:flex;flex-direction:column;align-items:center;gap:7px;
+  cursor:pointer;color:#fff;transition:.18s;flex:1 1 0;min-width:0;max-width:110px;overflow:hidden;
+  padding:10px 6px;border-radius:11px;margin:5px 8px;
+  border:1.5px solid rgba(255,255,255,.25);background:rgba(255,255,255,.1);
+  outline:none;-webkit-tap-highlight-color:transparent}
+.mvbtn svg{width:34px;height:34px;display:block}
+.mvbtn .mvlbl{font-size:16px;color:rgba(255,255,255,.75);transition:.18s}
+/* 焦点/悬停/选中：背景色块+边框变色+放大，但颜色保持白色，不像全屏 .ob 按钮那样变青色 */
+.mvbtn:hover,.mvbtn[data-f].focused{background:rgba(199,54,247,.3);border-color:var(--ac);transform:scale(1.1)}
+.mvbtn:hover .mvlbl,.mvbtn[data-f].focused .mvlbl{color:#fff}
+.mvbtn.act{background:rgba(199,54,247,.45);border-color:var(--ac);color:var(--ac2)}
+.mvbtn.act .mvlbl{color:var(--ac2)}
+#now-idle{position:absolute;top:0;right:0;bottom:0;left:0;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;background:radial-gradient(circle at 30% 50%,rgba(199,54,247,.2),transparent),var(--navy);
+  gap:10px;z-index:2}
+.idle-big{font-size:58px;font-weight:900;letter-spacing:4px;font-family:"PingFang SC","Microsoft YaHei",sans-serif;
+  background:linear-gradient(90deg,var(--ac2),var(--ac),var(--pink));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.idle-sub{color:var(--sub);font-size:17px}
+#now-info{position:absolute;left:0;bottom:0;right:0;padding:12px 14px;
+  background:linear-gradient(0,rgba(0,0,0,.85),transparent);display:none;z-index:3}
+#now-info.show{display:block}
+.ni-t{font-size:24px;font-weight:700}.ni-m{font-size:16px;color:rgba(255,255,255,.65);margin-top:2px}
+/* QR - 修复双码 */
+#qr-corner{position:absolute;top:10px;right:10px;background:rgba(0,0,0,.65);
+  backdrop-filter:blur(8px);border-radius:12px;padding:8px;text-align:center;z-index:4;pointer-events:none}
+#home-qr canvas{display:block!important;border-radius:5px}
+#home-qr img{display:none!important}
+.qr-lbl{font-size:14px;color:rgba(255,255,255,.6);margin-top:4px}
+/* ============ 模块：歌名/歌星/常唱/收藏 四卡片 ============ */
+#mid-cards{display:flex;flex-direction:column;position:relative;z-index:2}
+.mc{flex:1;border-radius:14px;padding:14px 16px;display:flex;align-items:center;
+  justify-content:space-between;cursor:pointer;transition:transform .15s}
+.mc[data-f].focused,.mc:hover{transform:scale(1.035)}
+/* Bug修复：首页"歌名/歌星/常唱/收藏"四张卡片移动焦点会变色。
+   根因：下方(通用兜底规则) `[data-f].focused{background:...}` 对所有带 data-f
+   的元素生效，且它的选择器特异性(仅一个属性选择器+一个类)比各卡片自身的
+   `.mc-name`/`.mc-artist` 等专属着色类(仅一个类)更高，于是聚焦/悬停时这条
+   通用规则的半透明青色背景会盖过卡片本来的渐变色，看起来像"整片变色"。
+   这里针对四张卡片各自的着色类补一条同等书写方式、但特异性更高的规则，
+   显式把 background 锁回各自原本的渐变色，聚焦/悬停就只剩缩放效果，不再变色。 */
+.mc-name[data-f].focused,.mc-name:hover{background:var(--g2)}
+.mc-artist[data-f].focused,.mc-artist:hover{background:var(--g3)}
+.mc-history[data-f].focused,.mc-history:hover{background:var(--g5)}
+.mc-fav[data-f].focused,.mc-fav:hover{background:var(--g7)}
+.mc .cn{font-size:29px;font-weight:800;font-family:"PingFang SC","Microsoft YaHei",sans-serif}.mc .ci{font-size:40px;opacity:.85}
+.mc-name{background:var(--g2);color:#fff}.mc-artist{background:var(--g3)}
+.mc-history{background:var(--g5)}.mc-fav{background:var(--g7)}
+/* ============ 模块：已点队列 ============ */
+#right-queue{border-radius:16px;padding:12px 12px 8px;
+  background:linear-gradient(160deg,#0d0050,#1a0060 40%,#2a0080);display:flex;flex-direction:column;overflow:hidden}
+.rq-h{font-size:17px;font-weight:700;color:var(--ac2);margin-bottom:8px;display:flex;align-items:center;flex-shrink:0}
+.rq-cnt{font-size:15px;color:var(--sub);margin-left:auto}
+#rq-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;scrollbar-gutter:stable}
+#rq-list::-webkit-scrollbar{width:3px}#rq-list::-webkit-scrollbar-thumb{background:rgba(199,54,247,.4);border-radius:2px}
+.rq-i{padding:7px 9px;border-radius:9px;background:rgba(255,255,255,.05);flex-shrink:0}
+.rq-i.rq-p{background:rgba(199,54,247,.2);border:1px solid rgba(199,54,247,.4)}
+.rq-t{font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rq-m{font-size:14px;color:var(--sub);margin-top:1px}
+/* Footer */
+#footer{display:flex;align-items:center;padding:6px 16px 10px;flex-shrink:0;border-top:1px solid rgba(255,255,255,.05)}
+.fb-r{margin-left:auto;display:flex}
+.fb{display:flex;align-items:center;padding:6px 14px;border-radius:999px;
+  font-size:16px;cursor:pointer;border:1px solid rgba(255,255,255,.18);color:#fff;transition:.2s}
+.fb[data-f].focused,.fb:hover{border-color:var(--ac);color:var(--ac);transform:scale(1.06)}
+/* 全屏层 */
+#fs-tap{position:fixed;top:0;right:0;bottom:0;left:0;z-index:51;display:none;cursor:pointer;background:transparent}
+#fs-tap.on{display:block}
+#fs-ov{position:fixed;top:0;right:0;bottom:0;left:0;z-index:52;pointer-events:none;opacity:0;transition:opacity .3s;
+  display:flex;flex-direction:column;
+  background:linear-gradient(0,rgba(0,0,0,.72) 0%,rgba(0,0,0,.2) 25%,transparent 55%,rgba(0,0,0,.2) 100%)}
+#fs-ov.show{opacity:1;pointer-events:all}
+#ov-top{padding:18px 24px;display:flex;align-items:center}
+#ov-back{width:56px;height:56px;border-radius:50%;border:2px solid rgba(255,255,255,.5);
+  display:flex;align-items:center;justify-content:center;font-size:26px;cursor:pointer;
+  background:rgba(0,0,0,.4);transition:.2s;flex-shrink:0;color:#fff}
+#ov-back:hover{border-color:#fff}
+#ov-title{font-size:26px;font-weight:700}#ov-artist{font-size:17px;color:rgba(255,255,255,.65);margin-top:2px}
+#ov-bot{margin-top:auto;padding:14px 24px}
+#prog-bar{width:100%;height:4px;background:rgba(255,255,255,.2);border-radius:2px;cursor:pointer;margin-bottom:5px}
+#prog-fill{height:100%;background:linear-gradient(90deg,var(--ac),var(--ac2));border-radius:2px;width:0}
+.tr{display:flex;justify-content:space-between;font-size:15px;color:rgba(255,255,255,.4);margin-bottom:12px}
+#ov-btns{display:flex;align-items:center;justify-content:center;flex-wrap:wrap}
+.ob{display:flex;flex-direction:column;align-items:center;padding:10px 18px;border-radius:11px;
+  cursor:pointer;min-width:72px;border:1.5px solid rgba(255,255,255,.25);
+  background:rgba(255,255,255,.1);font-size:16px;transition:.2s;color:#fff}
+.ob .oi{font-size:26px;display:flex;align-items:center;justify-content:center}
+.ob .oi svg{width:26px;height:26px;display:block}
+.ob:hover,.ob[data-f].focused{background:rgba(199,54,247,.3);border-color:var(--ac);transform:scale(1.08)}
+.ob.act{background:rgba(199,54,247,.45);border-color:var(--ac)}
+/* 全屏右侧队列 */
+#fsq{position:fixed;top:0;right:0;bottom:0;width:280px;z-index:53;
+  background:rgba(7,5,22,.97);backdrop-filter:blur(20px);
+  border-left:1px solid rgba(199,54,247,.35);
+  transform:translateX(100%);transition:transform .3s;display:flex;flex-direction:column}
+#fsq.open{transform:translateX(0)}
+.fsq-h{padding:16px 14px;font-size:19px;font-weight:700;color:var(--ac2);
+  border-bottom:1px solid rgba(255,255,255,.07);display:flex;align-items:center;flex-shrink:0}
+.fsq-close{margin-left:auto;width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,.1);
+  display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:19px}
+.fsq-body{flex:1;overflow-y:auto;padding:10px 12px;scrollbar-gutter:stable}
+.fsq-row{padding:9px 10px;border-radius:10px;background:rgba(255,255,255,.05);margin-bottom:6px}
+.fsq-row.fsq-p{background:rgba(199,54,247,.18);border:1px solid rgba(199,54,247,.4)}
+.fsq-t{font-size:17px;font-weight:600}.fsq-m{font-size:15px;color:var(--sub);margin-top:2px}
+/* 通用底部面板 */
+.pd{position:fixed;top:0;right:0;bottom:0;left:0;z-index:60;background:rgba(0,0,0,.6);display:none;align-items:flex-end}
+.pd.open{display:flex}
+.ps{width:100%;border-radius:22px 22px 0 0;background:#0f0f28;
+  border-top:1px solid rgba(255,255,255,.1);display:flex;flex-direction:column;overflow:hidden;max-height:80vh}
+/* 搜索/已点/均衡器：改成居中浮窗，三者宽高固定一致，不再是从底部滑出的抽屉 */
+.pd-center{align-items:center;justify-content:center;padding:24px}
+.pd-center .ps{width:560px;max-width:92vw;height:640px;max-height:82vh;
+  border-radius:22px;border:1px solid rgba(255,255,255,.1)}
+.ph{display:flex;align-items:center;padding:16px 20px 11px;border-bottom:1px solid rgba(255,255,255,.06);flex-shrink:0}
+.ph h3{font-size:21px;font-weight:700;flex:1}
+.pc{width:42px;height:42px;border-radius:50%;background:rgba(255,255,255,.08);
+  display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer}
+.pb{flex:1;overflow-y:auto;padding:12px 20px;scrollbar-gutter:stable}
+.pb::-webkit-scrollbar{width:4px}.pb::-webkit-scrollbar-thumb{background:rgba(199,54,247,.3);border-radius:2px}
+/* 均衡器面板 */
+.eq-list{display:flex;flex-direction:column;align-items:center}
+.eq-list>*:not(:last-child){margin-bottom:10px}
+@supports (gap:1px){.eq-list{gap:10px}.eq-list>*{margin:0}}
+.eq-opt{width:100%;max-width:420px;padding:18px 20px;border-radius:12px;background:rgba(255,255,255,.06);
+  border:1.5px solid rgba(255,255,255,.12);font-size:19px;font-weight:600;cursor:pointer;transition:.2s;text-align:center;box-sizing:border-box}
+.eq-opt:hover,.eq-opt[data-f].focused{border-color:var(--ac2);background:rgba(54,217,247,.15);transform:scale(1.03)}
+.eq-opt.sel{background:var(--g7);border-color:transparent}
+/* 全屏面板 */
+.pd-full{position:fixed;top:0;right:0;bottom:0;left:0;z-index:60;background:var(--bg);display:none;flex-direction:column}
+.pd-full.open{display:flex}
+.pf-head{display:flex;align-items:center;padding:14px 20px;background:rgba(5,5,20,.92);
+  backdrop-filter:blur(16px);border-bottom:1px solid rgba(255,255,255,.08);flex-shrink:0}
+.pf-head h2{font-size:24px;font-weight:800;
+  background:linear-gradient(90deg,var(--ac2),var(--ac));-webkit-background-clip:text;background-clip:text;color:transparent}
+.pf-back{padding:7px 18px;border-radius:999px;border:1px solid rgba(255,255,255,.25);
+  font-size:17px;cursor:pointer;margin-left:auto;color:#fff;transition:.2s}
+.pf-back:hover,.pf-back[data-f].focused{border-color:var(--ac);color:var(--ac);transform:scale(1.08)}
+.pf-body{flex:1;display:flex;overflow:hidden}
+/* DOM顺序：alpha面板在左(DOM first)，pf-main在右(DOM second)，CSS flex order实现视觉上main在左 */
+.alpha-panel{width:340px;flex-shrink:0;background:rgba(0,0,0,.45);
+  border-right:1px solid rgba(255,255,255,.07);padding:16px 14px;
+  display:flex;flex-direction:column;overflow:visible;order:2}
+.pf-main{flex:1;display:flex;flex-direction:column;padding:14px 18px;overflow:hidden;order:1}
+.pf-foot{display:flex;align-items:center;justify-content:center;gap:16px;
+  padding:10px 20px;border-top:1px solid rgba(255,255,255,.07);flex-shrink:0}
+.pf-pg-btn{padding:8px 22px;border-radius:999px;border:1px solid rgba(255,255,255,.2);
+  font-size:17px;cursor:pointer;transition:.2s;background:rgba(255,255,255,.06);color:#fff}
+.pf-pg-btn:hover,.pf-pg-btn[data-f].focused{border-color:var(--ac);background:rgba(199,54,247,.2);transform:scale(1.08)}
+.pf-pg-info{font-size:19px;color:var(--sub)}
+/* Bug2修复：字母键盘放大2倍 */
+.alpha-disp{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);
+  border-radius:12px;padding:12px 14px;margin-bottom:14px;
+  display:flex;align-items:center;flex-shrink:0}
+.ad-txt{flex:1;color:#fff;font-weight:700;letter-spacing:2px;font-size:24px}
+.alpha-disp .di{font-size:24px;color:var(--sub)}
+.alpha-keys{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;overflow:visible;padding:4px}
+/* Bug3修复：.ak 加 data-f 支持遥控焦点 */
+.ak{display:flex;align-items:center;justify-content:center;border-radius:10px;
+  font-size:22px;font-weight:700;cursor:pointer;height:60px;
+  background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.12);transition:.15s;color:#fff}
+.ak:hover,.ak[data-f].focused{background:var(--g6);border-color:transparent;transform:scale(1.08)}
+.ak.sel{background:var(--g6);border-color:transparent}
+.ak-clr{background:rgba(255,79,155,.15);border-color:rgba(255,79,155,.3);color:#fff;grid-column:span 2;font-size:17px;font-weight:600}
+.ak-clr:hover,.ak-clr[data-f].focused{background:rgba(255,79,155,.4);border-color:var(--pink);color:#fff;transform:scale(1.08)}
+/* 歌手网格 */
+.ag{display:grid;grid-template-columns:repeat(6,1fr);gap:14px 10px;flex:1;overflow-y:auto;padding:4px 2px;
+  /* Bug修复：焦点移动到最右列/下方行触发 scrollIntoView 滚动时，垂直滚动条
+     从"无"变"有"会让内容区宽度瞬间变窄，网格按百分比重新分配列宽，
+     整排卡片（尤其是最右列）跟着往左跳一下，造成明显的界面抖动。
+     scrollbar-gutter: stable both-edges 让浏览器无论滚动条是否需要显示，
+     都预留左右对称的滚动条空间，内容区宽度和列宽从头到尾保持不变。 */
+  scrollbar-gutter:stable both-edges}
+.ag::-webkit-scrollbar{width:4px}.ag::-webkit-scrollbar-thumb{background:rgba(199,54,247,.3);border-radius:2px}
+.ag-card{display:flex;flex-direction:column;align-items:center;cursor:pointer;
+  transition:.15s;padding:8px 4px;border-radius:12px}
+.ag-card:hover,.ag-card[data-f].focused{background:rgba(255,255,255,.06);transform:scale(1.05)}
+.ag-av{width:104px;height:104px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:32px;font-weight:800;border:3px solid rgba(255,255,255,.12);transition:.2s}
+.ag-card:hover .ag-av,.ag-card[data-f].focused .ag-av{border-color:var(--ac2)}
+.ag-name{font-size:16px;text-align:center;max-width:104px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ag-cnt{font-size:14px;color:var(--sub)}
+/* 歌曲列表 */
+.song-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;scrollbar-gutter:stable}
+.song-list::-webkit-scrollbar{width:4px}.song-list::-webkit-scrollbar-thumb{background:rgba(199,54,247,.3);border-radius:2px}
+/* 歌名菜单：左右两栏，取代原来的整页单列+分页 */
+.song-list-2col{display:grid;grid-template-columns:1fr 1fr;grid-auto-flow:row;gap:11px 16px;align-content:start}
+.so-row{display:flex;align-items:center;padding:14px 11px;border-radius:11px;
+  background:rgba(255,255,255,.05);transition:.15s}
+.so-row:hover{background:rgba(199,54,247,.12)}
+.so-num{width:32px;height:32px;border-radius:50%;background:var(--g3);
+  display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+.so-info{flex:1;min-width:0}
+.so-t{font-size:17px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.so-a{font-size:15px;color:var(--sub);margin-top:2px}
+.so-acts{display:flex;flex-shrink:0}
+.btn-add{padding:5px 12px;border-radius:8px;background:var(--g6);font-size:15px;cursor:pointer;border:none;color:#fff;outline:none;-webkit-tap-highlight-color:transparent}
+.btn-add[data-f].focused,.btn-add:hover{background:var(--ac2);color:#07071a;transform:scale(1.12)}
+.btn-fav{width:36px;height:36px;border-radius:7px;background:rgba(255,255,255,.08);
+  border:none;cursor:pointer;font-size:17px;display:flex;align-items:center;justify-content:center;color:#fff;
+  outline:none;-webkit-tap-highlight-color:transparent}
+.btn-fav.faved{background:rgba(255,79,155,.3);color:var(--pink)}
+.btn-fav[data-f].focused,.btn-fav:hover{background:rgba(54,217,247,.4);color:var(--ac2);transform:scale(1.18)}
+/* 队列行 */
+.qr-row{display:flex;align-items:center;padding:9px 11px;border-radius:11px;
+  background:rgba(255,255,255,.04);margin-bottom:6px}
+.qr-row.qrp{background:rgba(199,54,247,.15);border:1px solid rgba(199,54,247,.4)}
+.qr-num{font-size:15px;color:var(--sub);width:26px;text-align:center}
+.qr-info{flex:1;min-width:0}.qr-t{font-size:17px;font-weight:600}.qr-m{font-size:15px;color:var(--sub);margin-top:2px}
+.ma{padding:4px 10px;border-radius:7px;font-size:15px;cursor:pointer;border:none;color:#fff}
+.ma[data-f].focused,.ma:hover{background:var(--ac2);color:#07071a;transform:scale(1.12)}
+.qr-acts{display:flex;flex-shrink:0}
+.qr-acts>*:not(:last-child){margin-right:5px}
+@supports (gap:1px){.qr-acts{gap:5px}.qr-acts>*{margin:0}}
+.search-box{display:flex;align-items:center}
+.search-box>*:not(:last-child){margin-right:8px}
+@supports (gap:1px){.search-box{gap:8px}.search-box>*{margin:0}}
+.ma-top{background:rgba(124,44,247,.5)}.ma-del{background:rgba(255,79,155,.2);color:var(--pink)}
+/* 爱唱榜 */
+.chart-row{display:flex;align-items:center;padding:9px 11px;border-radius:11px;
+  background:rgba(255,255,255,.04);margin-bottom:5px}
+.chart-row:hover{background:rgba(199,54,247,.12)}
+.ck{width:30px;text-align:center;font-size:17px;font-weight:800}
+.r1{color:#ffd700}.r2{color:#c0c0c0}.r3{color:#cd7f32}
+.chart-info{flex:1;min-width:0}.ct{font-size:17px;font-weight:600}.cm{font-size:15px;color:var(--sub);margin-top:2px}
+.cp{font-size:15px;color:var(--ac2);white-space:nowrap;margin-right:5px}
+.set-r{display:flex;align-items:center;padding:13px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+.set-r:last-child{border:none}.set-l{flex:1;font-size:17px}.set-v{color:var(--sub);font-size:16px;margin-right:8px}
+#toast{position:fixed;top:16px;left:50%;transform:translateX(-50%) translateY(-70px);
+  background:rgba(20,20,50,.96);border:1px solid rgba(199,54,247,.4);
+  padding:8px 18px;border-radius:10px;font-size:17px;z-index:99;backdrop-filter:blur(12px);transition:transform .28s}
+#toast.show{transform:translateX(-50%) translateY(0)}
+.pc[data-f].focused,.pc:hover{background:rgba(54,217,247,.3);color:var(--ac2);transform:scale(1.15)}
+/* 通用兜底：没有专门写聚焦样式的 data-f 元素，一律用"颜色+放大"表现，不用任何描边框 */
+[data-f].focused{background:rgba(54,217,247,.25);transform:scale(1.08)}
+
+/* ============================================================
+   响应式：竖屏(手机)/横屏(电视)布局切换
+   ------------------------------------------------------------
+   上面所有模块的默认样式就是"电视横屏"版（html[data-layout="tv"]，也是
+   本页历史上唯一的形态，未加任何 data-layout 属性时同样生效，保证极端情况下
+   JS 还没跑完时也不会裸奔）。这里只追加"竖屏(手机)"下几个模块需要覆盖的差异：
+     头部 HEADER   ：字号/间距略微收紧，其余结构不变（本身已经足够灵活）
+     MV 播放       ：宽度撑满，按 fitNowPanel() 量出的3:2高度不变
+     控制按钮      ：从"电视上的单行7个大按钮"改成"4列网格自动换行"(4+3两行)
+     四卡片        ：从"竖排4张长条"改成"2x2网格"，图标挪到右下角
+     已点队列      ：整栏隐藏，改由头部"已点"按钮打开已有的 #pd-queue 弹层
+   模块内部各元素的 id/class 完全不变，因此上面数百行电视遥控焦点导航、
+   WebSocket、播放器等 JS 逻辑不需要任何改动，天然对两种布局都生效。
+   ============================================================ */
+html[data-layout="mobile"] #topbar{padding:8px 12px 6px}
+html[data-layout="mobile"] .logo{font-size:22px}
+html[data-layout="mobile"] .nb{font-size:14px;padding:5px 8px}
+html[data-layout="mobile"] #clock-time{font-size:20px}
+html[data-layout="mobile"] #clock-date{font-size:12px}
+html[data-layout="mobile"] #clock-badge{padding:4px 12px 5px}
+
+/* 主布局容器：电视是三栏网格，手机改成单列纵向堆叠，可整体上下滚动兜底
+   （正常情况下一屏放得下，超小屏/系统字体放大等极端情况允许滚动，不裁切内容）。 */
+html[data-layout="mobile"] #grid{
+  display:flex;flex-direction:column;overflow-y:auto;padding:10px 12px 8px;gap:12px}
+
+/* MV播放列：手机下不再是 flex:1 抢占电视三栏里"剩下的高度"，
+   改成随内容定高（真正高度仍由 fitNowPanel() 按 3:2 比例量出来赋值）。 */
+html[data-layout="mobile"] #now-col{flex:0 0 auto}
+
+/* 控制按钮：电视上是"绝不换行的一整排"，手机屏幕窄，7个按钮塞一行会挤成
+   一条缝，改用4列网格自动换行（4+3两行），每个按钮方形，图标/文字都保留。 */
+html[data-layout="mobile"] #mv-ctrl{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:6px 2px}
+html[data-layout="mobile"] .mvbtn{margin:0;max-width:none;min-width:0}
+
+/* 歌名/歌星/常唱/收藏：电视上竖排4张长条卡片，手机上改成2x2方形网格，
+   名称留在左上、图标挪到右下角，视觉上更像"应用图标"而不是"列表行"。 */
+html[data-layout="mobile"] #mid-cards{
+  display:grid;grid-template-columns:1fr 1fr;grid-auto-rows:1fr;gap:10px;flex:0 0 auto}
+html[data-layout="mobile"] .mc{
+  flex:none;min-height:130px;flex-direction:column;align-items:flex-start;justify-content:space-between}
+html[data-layout="mobile"] .mc .ci{align-self:flex-end}
+
+/* 已点队列：手机屏幕装不下第三栏，整栏隐藏；功能并未消失——头部那颗
+   "已点"按钮本来就绑定 openPanel('queue')，会打开下面已有的 #pd-queue
+   弹层，内容和这里的 #right-queue 完全一致，只是换成全屏浮层展示。 */
+html[data-layout="mobile"] #right-queue{display:none}
+
+/* 底部"设置"条：手机上贴边即可，去掉多余的电视版留白 */
+html[data-layout="mobile"] #footer{padding:4px 12px 8px}
+
+/* 兼容旧版电视端 WebView 内核不支持 flexbox gap 属性：默认用 margin 模拟间距，
+   如果内核支持 gap 就用 @supports 特性检测把 margin 回退关掉，避免两者叠加导致间距翻倍。 */
+#topbar>*:not(:last-child){margin-right:8px}
+.nb>*:not(:last-child){margin-right:4px}
+.conn-badge>*:not(:last-child){margin-right:5px}
+#mid-cards>*:not(:last-child){margin-bottom:8px}
+#rq-list>*:not(:last-child){margin-bottom:5px}
+.fb-r>*:not(:last-child){margin-right:8px}
+.fb>*:not(:last-child){margin-right:4px}
+#ov-top>*:not(:last-child){margin-right:12px}
+#ov-btns>.ob{margin:0 5px 10px}
+.ob>*:not(:last-child){margin-bottom:3px}
+.ag-card>*:not(:last-child){margin-bottom:7px}
+.song-list:not(.song-list-2col)>*:not(:last-child){margin-bottom:5px}
+.so-row>*:not(:last-child){margin-right:9px}
+.so-acts>*:not(:last-child){margin-right:5px}
+.qr-row>*:not(:last-child){margin-right:7px}
+.chart-row>*:not(:last-child){margin-right:9px}
+.alpha-disp>*:not(:last-child){margin-right:8px}
+@supports (gap:1px){
+  #topbar{gap:8px}
+  #topbar>*{margin:0}
+  .nb{gap:4px}
+  .nb>*{margin:0}
+  .conn-badge{gap:5px}
+  .conn-badge>*{margin:0}
+  #mid-cards{gap:8px}
+  #mid-cards>*{margin:0}
+  #rq-list{gap:5px}
+  #rq-list>*{margin:0}
+  .fb-r{gap:8px}
+  .fb-r>*{margin:0}
+  .fb{gap:4px}
+  .fb>*{margin:0}
+  #ov-top{gap:12px}
+  #ov-top>*{margin:0}
+  /* Bug修复：全屏状态下按钮(.ob)间距消失。
+     #ov-btns 同样是 flex-wrap:wrap 的换行容器，这台电视浏览器的 gap 属性和
+     flex-wrap:wrap 组合使用时不会正确渲染（问题和上面 #mv-ctrl 完全一样），
+     之前这里用 @supports(gap:1px) 检测到"看起来支持 gap"就把上面第391行那条
+     稳定可用的 margin 间距关掉、换成 gap:10px，但检测到的只是"认识这个属性"，
+     不代表"这个属性在换行场景下能正确渲染"，结果全屏按钮就变成了紧贴在一起、
+     没有间距。这里去掉这个不可靠的 gap 覆盖，让 margin 方案一直生效。
+     下面 .ob{gap:3px} 是单个按钮内部图标和文字的间距(flex-direction:column，
+     不换行)，不受这个问题影响，保留不变。 */
+  .ob{gap:3px}
+  .ob>*{margin:0}
+  .ag-card{gap:7px}
+  .ag-card>*{margin:0}
+  .song-list:not(.song-list-2col){gap:5px}
+  .song-list:not(.song-list-2col)>*{margin:0}
+  .so-row{gap:9px}
+  .so-row>*{margin:0}
+  .so-acts{gap:5px}
+  .so-acts>*{margin:0}
+  .qr-row{gap:7px}
+  .qr-row>*{margin:0}
+  .chart-row{gap:9px}
+  .chart-row>*{margin:0}
+  .alpha-disp{gap:8px}
+  .alpha-disp>*{margin:0}
+}
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="home">
+  <nav id="topbar">
+    <div class="logo">家悦K歌</div>
+    <button class="nb" data-f onclick="openPanel('search')"><span class="nbi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span> 搜索</button>
+    <button class="nb" data-f onclick="openPanel('queue')"><span class="nbi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span> 已点<span class="badge" id="qbadge">0</span></button>
+    <div class="sp"></div>
+    <div id="conn-status" class="conn-badge bad" title="与后端服务器连接状态"><span class="nbi" id="conn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></span><span id="conn-lbl">连接中…</span></div>
+    <div id="clock-badge"><div id="clock-time">--:--</div><div id="clock-date">----/--/-- 星期-</div></div>
+  </nav>
+  <div id="grid">
+    <div id="now-col">
+      <div id="now-panel" data-f onclick="enterFullscreen()">
+        <video id="ktv-video" class="video-home" playsinline></video>
+        <div id="video-loading"><div class="vl-spinner"></div><div class="vl-text">加载中…</div></div>
+        <div id="now-idle"><div class="idle-big">家悦K歌</div><div class="idle-sub">扫码点歌 · 大屏沉浸演唱</div></div>
+        <div id="now-info"><div class="ni-t" id="ni-title">—</div><div class="ni-m" id="ni-meta">—</div></div>
+        <div id="qr-corner"><div id="home-qr"></div><div class="qr-lbl">扫码点歌</div></div>
+      </div>
+      <div id="mv-ctrl">
+        <button class="mvbtn" data-f onclick="openPanel('eq')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg><span class="mvlbl">均衡器</span></button>
+        <button class="mvbtn" data-f id="btn-voice" onclick="toggleVoice()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/></svg><span class="mvlbl">原/伴唱</span></button>
+        <button class="mvbtn" data-f onclick="adjVolume(-0.1)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polygon points="10 5 5.5 9 2 9 2 15 5.5 15 10 19 10 5" fill="currentColor" stroke="none"/><line x1="15" y1="12" x2="22" y2="12"/></svg><span class="mvlbl">音量-</span></button>
+        <button class="mvbtn" data-f id="mv-pause-btn" onclick="togglePause()"><span id="picon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/></svg></span><span class="mvlbl" id="plbl2">播放</span></button>
+        <button class="mvbtn" data-f onclick="adjVolume(0.1)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polygon points="10 5 5.5 9 2 9 2 15 5.5 15 10 19 10 5" fill="currentColor" stroke="none"/><line x1="15" y1="12" x2="22" y2="12"/><line x1="18.5" y1="8.5" x2="18.5" y2="15.5"/></svg><span class="mvlbl">音量+</span></button>
+        <button class="mvbtn" data-f onclick="cutSong()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 14 12 5 20 5 4" fill="currentColor" stroke="none"/><line x1="18" y1="4" x2="18" y2="20"/></svg><span class="mvlbl">切歌</span></button>
+        <button class="mvbtn" data-f onclick="restartSong()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg><span class="mvlbl">重唱</span></button>
+      </div>
+    </div>
+    <div id="mid-cards">
+      <div class="mc mc-name" data-f onclick="openPF('order')"><span class="cn">歌名</span><span class="ci">🎵</span></div>
+      <div class="mc mc-artist" data-f onclick="openPF('artists')"><span class="cn">歌星</span><span class="ci">🎤</span></div>
+      <div class="mc mc-history" data-f onclick="openPF('history')"><span class="cn">常唱</span><span class="ci">⭐</span></div>
+      <div class="mc mc-fav" data-f onclick="openPF('favorites')"><span class="cn">收藏</span><span class="ci">❤️</span></div>
+    </div>
+    <div id="right-queue">
+      <div class="rq-h">♪ 已点队列<span class="rq-cnt" id="rq-cnt">0首</span></div>
+      <div id="rq-list"><div style="color:var(--sub);font-size:16px;text-align:center;padding:16px">暂无点歌</div></div>
+    </div>
+  </div>
+  <div id="footer">
+    <div class="fb-r">
+      <div class="fb" data-f onclick="openPanel('settings')">⚙ 设置</div>
+    </div>
+  </div>
+</div>
+<div id="fs-tap" onclick="showOverlay()"></div>
+<div id="fs-ov">
+  <div id="ov-top">
+    <div id="ov-back" onclick="exitKtvFullscreen()">←</div>
+    <div><div id="ov-title">—</div><div id="ov-artist">—</div></div>
+  </div>
+  <div id="ov-bot">
+    <div id="prog-bar" onclick="seekVideo(event)"><div id="prog-fill"></div></div>
+    <div class="tr"><span id="tcur">0:00</span><span id="ttot">0:00</span></div>
+    <div id="ov-btns">
+      <div class="ob" data-f onclick="exitKtvFullscreen()"><span class="oi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></span>主页</div>
+      <div class="ob" data-f onclick="restartSong()"><span class="oi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></span>重唱</div>
+      <div class="ob" data-f id="ob-pause" onclick="togglePause()"><span class="oi" id="op-icon"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg></span><span id="op-lbl">暂停</span></div>
+      <div class="ob" data-f id="ob-voice" onclick="toggleVoice()"><span class="oi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></span><span id="ov-vlbl">原/伴唱</span></div>
+      <div class="ob" data-f onclick="cutSong()"><span class="oi"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"/><rect x="17" y="4" width="2" height="16"/></svg></span>切歌</div>
+      <div class="ob" data-f onclick="toggleFsQueue()"><span class="oi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span>队列</div>
+    </div>
+  </div>
+</div>
+<div id="fsq">
+  <div class="fsq-h">♪ 点歌队列<div class="fsq-close" onclick="closeFsQueue()">✕</div></div>
+  <div class="fsq-body" id="fsq-list"></div>
+</div>
+<!-- 底部面板 -->
+<div class="pd pd-center" id="pd-queue" onclick="if(event.target===this)closePanel('queue')">
+  <div class="ps"><div class="ph"><h3>🎵 点歌队列</h3><div class="pc" data-f onclick="closePanel('queue')">✕</div></div><div class="pb" id="pl-queue"></div></div>
+</div>
+<div class="pd" id="pd-charts" onclick="if(event.target===this)closePanel('charts')">
+  <div class="ps"><div class="ph"><h3>🏆 爱唱榜 TOP10</h3><div class="pc" data-f onclick="closePanel('charts')">✕</div></div><div class="pb" id="pl-charts"></div></div>
+</div>
+<div class="pd pd-center" id="pd-search" onclick="if(event.target===this)closePanel('search')">
+  <div class="ps"><div class="ph"><h3>🔍 搜歌点歌</h3><div class="pc" data-f onclick="closePanel('search')">✕</div></div>
+  <div class="pb"><div class="search-box" style="background:rgba(255,255,255,.07);border-radius:12px;padding:9px 13px;margin-bottom:12px;border:1px solid rgba(255,255,255,.1)">
+    <span>🔍</span><input id="si" style="flex:1;background:transparent;border:none;outline:none;color:#fff;font-size:19px" placeholder="输入歌名或歌手…" oninput="doSearch(this.value)">
+  </div><div id="pl-search"></div></div></div>
+</div>
+<div class="pd pd-center" id="pd-eq" onclick="if(event.target===this)closePanel('eq')">
+  <div class="ps"><div class="ph"><h3>🎚 均衡器</h3><div class="pc" data-f onclick="closePanel('eq')">✕</div></div>
+  <div class="pb"><div class="eq-list">
+    <div class="eq-opt sel" data-f data-eq="flat" onclick="setEQ('flat')">标准（关闭）</div>
+    <div class="eq-opt" data-f data-eq="vocal" onclick="setEQ('vocal')">人声增强</div>
+    <div class="eq-opt" data-f data-eq="bass" onclick="setEQ('bass')">低音增强</div>
+    <div class="eq-opt" data-f data-eq="bright" onclick="setEQ('bright')">明亮清晰</div>
+  </div></div></div>
+</div>
+<div class="pd" id="pd-settings" onclick="if(event.target===this)closePanel('settings')">
+  <div class="ps"><div class="ph"><h3>⚙ 设置</h3><div class="pc" data-f onclick="closePanel('settings')">✕</div></div>
+  <div class="pb">
+    <div class="set-r"><span class="set-l">服务器</span><span class="set-v" id="s-host">—</span></div>
+    <div class="set-r"><span class="set-l">曲库歌曲</span><span class="set-v" id="s-songs">—</span></div>
+    <div class="set-r" data-f style="cursor:pointer" onclick="doScan()"><span class="set-l">重新扫描曲库</span><span style="color:var(--ac2)">▶ 扫描</span></div>
+  </div></div>
+</div>
+<!-- 全屏面板 -->
+<div class="pd-full" id="pf-artists">
+  <div class="pf-head"><h2>🎙 歌星</h2><div class="pf-back" data-f onclick="closePF('artists')">返回</div></div>
+  <div class="pf-body">
+    <div class="alpha-panel">
+      <div class="alpha-disp"><span class="di">🔍</span><span class="ad-txt" id="ar-keys-txt">歌星搜索</span></div>
+      <div class="alpha-keys" id="ar-keys"><div class="ak" data-f onclick="handleAlpha('ar','A')">A</div>
+<div class="ak" data-f onclick="handleAlpha('ar','B')">B</div>
+<div class="ak" data-f onclick="handleAlpha('ar','C')">C</div>
+<div class="ak" data-f onclick="handleAlpha('ar','D')">D</div>
+<div class="ak" data-f onclick="handleAlpha('ar','E')">E</div>
+<div class="ak" data-f onclick="handleAlpha('ar','F')">F</div>
+<div class="ak" data-f onclick="handleAlpha('ar','G')">G</div>
+<div class="ak" data-f onclick="handleAlpha('ar','H')">H</div>
+<div class="ak" data-f onclick="handleAlpha('ar','J')">J</div>
+<div class="ak" data-f onclick="handleAlpha('ar','K')">K</div>
+<div class="ak" data-f onclick="handleAlpha('ar','L')">L</div>
+<div class="ak" data-f onclick="handleAlpha('ar','M')">M</div>
+<div class="ak" data-f onclick="handleAlpha('ar','N')">N</div>
+<div class="ak" data-f onclick="handleAlpha('ar','O')">O</div>
+<div class="ak" data-f onclick="handleAlpha('ar','P')">P</div>
+<div class="ak" data-f onclick="handleAlpha('ar','Q')">Q</div>
+<div class="ak" data-f onclick="handleAlpha('ar','R')">R</div>
+<div class="ak" data-f onclick="handleAlpha('ar','S')">S</div>
+<div class="ak" data-f onclick="handleAlpha('ar','T')">T</div>
+<div class="ak" data-f onclick="handleAlpha('ar','W')">W</div>
+<div class="ak" data-f onclick="handleAlpha('ar','X')">X</div>
+<div class="ak" data-f onclick="handleAlpha('ar','Y')">Y</div>
+<div class="ak" data-f onclick="handleAlpha('ar','Z')">Z</div>
+<div class="ak ak-clr" data-f onclick="handleAlpha('ar','DEL')">删除</div></div>
+    </div>
+    <div class="pf-main">
+      <div class="ag" id="artist-grid"></div>
+    </div>
+  </div>
+</div>
+<div class="pd-full" id="pf-order">
+  <div class="pf-head"><h2>🎵 立即点歌</h2><div class="pf-back" data-f onclick="closePF('order')">返回</div></div>
+  <div class="pf-body">
+    <div class="alpha-panel">
+      <div class="alpha-disp"><span class="di">🔍</span><span class="ad-txt" id="od-keys-txt">歌名搜索</span></div>
+      <div class="alpha-keys" id="od-keys"><div class="ak" data-f onclick="handleAlpha('od','A')">A</div>
+<div class="ak" data-f onclick="handleAlpha('od','B')">B</div>
+<div class="ak" data-f onclick="handleAlpha('od','C')">C</div>
+<div class="ak" data-f onclick="handleAlpha('od','D')">D</div>
+<div class="ak" data-f onclick="handleAlpha('od','E')">E</div>
+<div class="ak" data-f onclick="handleAlpha('od','F')">F</div>
+<div class="ak" data-f onclick="handleAlpha('od','G')">G</div>
+<div class="ak" data-f onclick="handleAlpha('od','H')">H</div>
+<div class="ak" data-f onclick="handleAlpha('od','J')">J</div>
+<div class="ak" data-f onclick="handleAlpha('od','K')">K</div>
+<div class="ak" data-f onclick="handleAlpha('od','L')">L</div>
+<div class="ak" data-f onclick="handleAlpha('od','M')">M</div>
+<div class="ak" data-f onclick="handleAlpha('od','N')">N</div>
+<div class="ak" data-f onclick="handleAlpha('od','O')">O</div>
+<div class="ak" data-f onclick="handleAlpha('od','P')">P</div>
+<div class="ak" data-f onclick="handleAlpha('od','Q')">Q</div>
+<div class="ak" data-f onclick="handleAlpha('od','R')">R</div>
+<div class="ak" data-f onclick="handleAlpha('od','S')">S</div>
+<div class="ak" data-f onclick="handleAlpha('od','T')">T</div>
+<div class="ak" data-f onclick="handleAlpha('od','W')">W</div>
+<div class="ak" data-f onclick="handleAlpha('od','X')">X</div>
+<div class="ak" data-f onclick="handleAlpha('od','Y')">Y</div>
+<div class="ak" data-f onclick="handleAlpha('od','Z')">Z</div>
+<div class="ak ak-clr" data-f onclick="handleAlpha('od','DEL')">删除</div></div>
+    </div>
+    <div class="pf-main">
+      <div class="song-list song-list-2col" id="order-song-list"></div>
+    </div>
+  </div>
+</div>
+<div class="pd-full" id="pf-history">
+  <div class="pf-head"><h2>⭐ 常唱</h2><div class="pf-back" data-f onclick="closePF('history')">返回</div></div>
+  <div class="pf-body">
+    <div class="alpha-panel">
+      <div class="alpha-disp"><span class="di">🔍</span><span class="ad-txt" id="hs-keys-txt">常唱搜索</span></div>
+      <div class="alpha-keys" id="hs-keys"><div class="ak" data-f onclick="handleAlpha('hs','A')">A</div>
+<div class="ak" data-f onclick="handleAlpha('hs','B')">B</div>
+<div class="ak" data-f onclick="handleAlpha('hs','C')">C</div>
+<div class="ak" data-f onclick="handleAlpha('hs','D')">D</div>
+<div class="ak" data-f onclick="handleAlpha('hs','E')">E</div>
+<div class="ak" data-f onclick="handleAlpha('hs','F')">F</div>
+<div class="ak" data-f onclick="handleAlpha('hs','G')">G</div>
+<div class="ak" data-f onclick="handleAlpha('hs','H')">H</div>
+<div class="ak" data-f onclick="handleAlpha('hs','J')">J</div>
+<div class="ak" data-f onclick="handleAlpha('hs','K')">K</div>
+<div class="ak" data-f onclick="handleAlpha('hs','L')">L</div>
+<div class="ak" data-f onclick="handleAlpha('hs','M')">M</div>
+<div class="ak" data-f onclick="handleAlpha('hs','N')">N</div>
+<div class="ak" data-f onclick="handleAlpha('hs','O')">O</div>
+<div class="ak" data-f onclick="handleAlpha('hs','P')">P</div>
+<div class="ak" data-f onclick="handleAlpha('hs','Q')">Q</div>
+<div class="ak" data-f onclick="handleAlpha('hs','R')">R</div>
+<div class="ak" data-f onclick="handleAlpha('hs','S')">S</div>
+<div class="ak" data-f onclick="handleAlpha('hs','T')">T</div>
+<div class="ak" data-f onclick="handleAlpha('hs','W')">W</div>
+<div class="ak" data-f onclick="handleAlpha('hs','X')">X</div>
+<div class="ak" data-f onclick="handleAlpha('hs','Y')">Y</div>
+<div class="ak" data-f onclick="handleAlpha('hs','Z')">Z</div>
+<div class="ak ak-clr" data-f onclick="handleAlpha('hs','DEL')">删除</div></div>
+    </div>
+    <div class="pf-main">
+      <div class="song-list" id="hist-song-list"></div>
+      <div class="pf-foot">
+        <button class="pf-pg-btn" data-f onclick="histPage(-1)">上一页</button>
+        <span class="pf-pg-info" id="hist-pg-info">1/1</span>
+        <button class="pf-pg-btn" data-f onclick="histPage(1)">下一页</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="pd-full" id="pf-favorites">
+  <div class="pf-head"><h2>❤️ 我的收藏</h2><div class="pf-back" data-f onclick="closePF('favorites')">返回</div></div>
+  <div class="pf-body">
+    <div class="alpha-panel">
+      <div class="alpha-disp"><span class="di">🔍</span><span class="ad-txt" id="fv-keys-txt">收藏搜索</span></div>
+      <div class="alpha-keys" id="fv-keys"><div class="ak" data-f onclick="handleAlpha('fv','A')">A</div>
+<div class="ak" data-f onclick="handleAlpha('fv','B')">B</div>
+<div class="ak" data-f onclick="handleAlpha('fv','C')">C</div>
+<div class="ak" data-f onclick="handleAlpha('fv','D')">D</div>
+<div class="ak" data-f onclick="handleAlpha('fv','E')">E</div>
+<div class="ak" data-f onclick="handleAlpha('fv','F')">F</div>
+<div class="ak" data-f onclick="handleAlpha('fv','G')">G</div>
+<div class="ak" data-f onclick="handleAlpha('fv','H')">H</div>
+<div class="ak" data-f onclick="handleAlpha('fv','J')">J</div>
+<div class="ak" data-f onclick="handleAlpha('fv','K')">K</div>
+<div class="ak" data-f onclick="handleAlpha('fv','L')">L</div>
+<div class="ak" data-f onclick="handleAlpha('fv','M')">M</div>
+<div class="ak" data-f onclick="handleAlpha('fv','N')">N</div>
+<div class="ak" data-f onclick="handleAlpha('fv','O')">O</div>
+<div class="ak" data-f onclick="handleAlpha('fv','P')">P</div>
+<div class="ak" data-f onclick="handleAlpha('fv','Q')">Q</div>
+<div class="ak" data-f onclick="handleAlpha('fv','R')">R</div>
+<div class="ak" data-f onclick="handleAlpha('fv','S')">S</div>
+<div class="ak" data-f onclick="handleAlpha('fv','T')">T</div>
+<div class="ak" data-f onclick="handleAlpha('fv','W')">W</div>
+<div class="ak" data-f onclick="handleAlpha('fv','X')">X</div>
+<div class="ak" data-f onclick="handleAlpha('fv','Y')">Y</div>
+<div class="ak" data-f onclick="handleAlpha('fv','Z')">Z</div>
+<div class="ak ak-clr" data-f onclick="handleAlpha('fv','DEL')">删除</div></div>
+    </div>
+    <div class="pf-main">
+      <div class="song-list" id="fav-song-list"></div>
+      <div class="pf-foot">
+        <button class="pf-pg-btn" data-f onclick="favPage(-1)">上一页</button>
+        <span class="pf-pg-info" id="fav-pg-info">1/1</span>
+        <button class="pf-pg-btn" data-f onclick="favPage(1)">下一页</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="pd-full" id="pf-artist-songs" style="z-index:61">
+  <div class="pf-head"><h2 id="as-title">歌手作品</h2><div class="pf-back" data-f onclick="closePF('artist-songs')">返回</div></div>
+  <div class="pf-body"><div class="pf-main"><div class="song-list song-list-2col" id="as-list"></div></div></div>
+</div>
+<div id="toast"></div>
+<script>
+const BASE=location.origin,MOBILE=BASE+'/m';
+const nowPanel=document.getElementById('now-panel');
+const video=document.getElementById('ktv-video');
+// 右上角时钟
+const WEEKDAYS=['星期日','星期一','星期二','星期三','星期四','星期五','星期六'];
+function updateClock(){
+  const d=new Date(),p=n=>String(n).padStart(2,'0');
+  document.getElementById('clock-time').textContent=`${p(d.getHours())}:${p(d.getMinutes())}`;
+  document.getElementById('clock-date').textContent=`${d.getFullYear()}/${p(d.getMonth()+1)}/${p(d.getDate())} ${WEEKDAYS[d.getDay()]}`;
+}
+updateClock();
+setInterval(updateClock,1000);
+function devId(){let id=localStorage.getItem('jydev');if(!id){id='tv-'+Math.random().toString(36).substr(2,9);localStorage.setItem('jydev',id);}return id;}
+// QR
+(function(){const q=document.getElementById('home-qr');q.innerHTML='';new QRCode(q,{text:MOBILE,width:88,height:88,colorDark:'#07071a',correctLevel:QRCode.CorrectLevel.M});})();
+// ═══════════════════════════════════════════════
+// VoiceManager：统一原唱/伴唱切换接口
+// 类型1（声道型）：单音频流立体声，左=伴唱，右=原唱，切换时复制声道到双耳
+// 类型2（音轨型）：多音频流，track[0]=原唱，track[1]=伴唱
+//
+// Bug修复说明（原唱/伴唱切换会从头播放 + 切完再拖进度条也从头播放）：
+// 根因是旧方案切音轨时靠重新赋值 video.src 指向服务端现场用 ffmpeg 重新封装
+// 出的一段新流，这段新流没有 Content-Length/Range，播放器只能整段从头播——
+// 切音轨本身，以及切完音轨后再拖一次进度条，都会触发这个"从头播放"。
+// 现在服务端把每首歌转成 HLS：视频轨和每条音频轨分别独立切片，master.m3u8
+// 用 EXT-X-MEDIA 把所有音频轨声明成同一个 AUDIO group(见 hlsgen.js)。前端用
+// hls.js 加载 master.m3u8 后，音轨型切换只是设置 hls.audioTrack，hls.js 只
+// 重新拉取音频分片，video 元素本身的播放位置、连续性完全不受影响；HLS 分片
+// 天然可按时间寻址，拖进度条对任意已选音轨都正常工作，不再需要手动记录/
+// 恢复 currentTime。
+// ═══════════════════════════════════════════════
+const VoiceManager = (() => {
+  const MODE = { UNKNOWN:'unknown', TRACKS:'tracks', STEREO:'stereo', MONO:'mono' };
+  let mode = MODE.UNKNOWN;
+  let _isOriginal = true;
+  let _trackCount = 1;    // 当前歌曲的音轨数，来自服务端 audio_tracks 字段
+  let _loadedTrack = 0;   // 当前 hls.js 已选的音轨号，避免重复设置
+
+  // Web Audio 节点（仅声道型使用，且只初始化一次）
+  let actx=null, src=null, split=null, merge=null, waReady=false;
+  // 均衡器：三段(低/中/高)固定频点的 BiquadFilterNode，常驻接在 merge 和最终输出
+  // 之间，预设只是改它们的 gain 值，不需要每次切换都重新连线，最安全也最简单。
+  let eqLow=null, eqMid=null, eqHigh=null;
+  const EQ_PRESETS={flat:[0,0,0],vocal:[-2,4,2],bass:[6,1,-1],bright:[-1,0,5]};
+
+  /** 初始化 Web Audio（必须在用户手势后调用） */
+  // Bug4修复：MV单音轨/不分声道时黑屏无法播放。
+  // 根因：createMediaElementSource(v) 一旦调用，video 元素的音频输出会被浏览器永久
+  // 接管，此后只能靠 Web Audio 图本身输出声音，video 不再有直接的音频通路。但原代码
+  // 只在"声道型"(applyStereo)里才把 split 接到 merge 上；单音轨或无法判定类型的视频
+  // 走的是 apply() 里"UNKNOWN/MONO：静默处理"分支——什么都不接，split→merge 这条链路
+  // 从始至终是断开的。相当于把这些视频的音频输出永久掐断成了死路。在本应用运行的
+  // 内嵌浏览器内核里，一条已建立却拿不到有效输出的音频图会连累媒体管线卡死，表现为
+  // 视频黑屏、完全播放不出来，而不仅仅是没声音。
+  // 修复：初始化时先建立一条"原样直通"的默认连接（0→0, 1→1），保证在没有明确判定为
+  // 声道型之前，音频/视频管线始终是通的；真正需要做声道选择切换时(applyStereo)才在此
+  // 基础上覆盖成左右声道复制，两者互不冲突。
+  function connectPassthrough() {
+    if (!split || !merge) return;
+    try { split.disconnect(); } catch(e) {}
+    split.connect(merge, 0, 0);
+    split.connect(merge, 1, 1);
+  }
+  function initWA(v) {
+    if (waReady) { if (actx.state==='suspended') actx.resume(); return; }
+    try {
+      actx = new (window.AudioContext||window.webkitAudioContext)();
+      src  = actx.createMediaElementSource(v);
+      split = actx.createChannelSplitter(2);
+      merge = actx.createChannelMerger(2);
+      eqLow = actx.createBiquadFilter(); eqLow.type='lowshelf'; eqLow.frequency.value=200;
+      eqMid = actx.createBiquadFilter(); eqMid.type='peaking'; eqMid.frequency.value=1000; eqMid.Q.value=1;
+      eqHigh = actx.createBiquadFilter(); eqHigh.type='highshelf'; eqHigh.frequency.value=4000;
+      src.connect(split);
+      merge.connect(eqLow); eqLow.connect(eqMid); eqMid.connect(eqHigh); eqHigh.connect(actx.destination);
+      connectPassthrough(); // 默认先直通，保证还没判定类型时也能正常出声/播放
+      waReady = true;
+      if (actx.state==='suspended') actx.resume();
+    } catch(e) { console.warn('[VoiceManager] Web Audio init:', e); }
+  }
+
+  /** 检测当前 video 的类型 */
+  function detect(v) {
+    if (_trackCount >= 2) return MODE.TRACKS; // 服务端探测明确告知有多条音轨
+    if (waReady && src && src.channelCount >= 2) return MODE.STEREO;
+    return MODE.UNKNOWN;
+  }
+
+  /** 切换状态上报给服务端，让 docker 后台日志也能看到原唱/伴唱切换事件。
+   *  fire-and-forget：失败不影响播放本身，纯粹是为了排查问题方便查日志。 */
+  function reportVoiceSwitch(voiceMode) {
+    try {
+      fetch(BASE + '/api/voice/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          song_id: curSong && curSong.song_id,
+          mode: voiceMode, // 'tracks' | 'stereo'
+          to: _isOriginal ? 'original' : 'accompaniment',
+        }),
+      }).catch(() => {});
+    } catch (e) {}
+  }
+
+  /** 声道型切换：把指定声道复制到双耳输出 */
+  function applyStereo() {
+    if (!waReady || !split || !merge) return;
+    try { split.disconnect(); } catch(e) {}
+    if (_isOriginal) {
+      // 原唱：右声道(ch1) → L+R
+      split.connect(merge, 1, 0);
+      split.connect(merge, 1, 1);
+    } else {
+      // 伴唱：左声道(ch0) → L+R
+      split.connect(merge, 0, 0);
+      split.connect(merge, 0, 1);
+    }
+    reportVoiceSwitch('stereo');
+  }
+
+  /** 音轨型切换：由 hls.js 负责，只重新拉取目标音轨的分片，视频播放完全不中断。 */
+  function applyTracks(v) {
+    const want = _isOriginal ? 0 : 1;
+    if (want === _loadedTrack) return;
+    if (!hlsInstance || !hlsInstance.audioTracks || hlsInstance.audioTracks.length <= want) return;
+    hlsInstance.audioTrack = want;
+    _loadedTrack = want;
+    reportVoiceSwitch('tracks');
+  }
+
+  /** 统一应用当前状态 */
+  function apply(v) {
+    if (mode === MODE.UNKNOWN) mode = detect(v);
+    if (mode === MODE.TRACKS)  { applyTracks(v); return; }
+    if (mode === MODE.STEREO)  { applyStereo();  return; }
+    // UNKNOWN/MONO：单音轨/无法判定声道类型，保持直通，不做声道选择，
+    // 但一定要保证链路是通的（initWA 里已默认直通，这里换歌时兜底重连一次）
+    connectPassthrough();
+  }
+
+  return {
+    /** 每次新歌加载（loadedmetadata 后）调用；trackCount 来自服务端歌曲元数据 */
+    onLoad(v, trackCount) {
+      _trackCount = trackCount || 1;
+      _loadedTrack = 0; // 新歌不带 track 参数时，默认拿到的是第0条(原唱)
+      mode = detect(v);
+      apply(v);
+      console.log('[VoiceManager] mode=' + mode + ' original=' + _isOriginal + ' tracks=' + _trackCount);
+    },
+    /** 首次用户交互时调用，激活 Web Audio */
+    wake(v) { initWA(v); },
+    /** 切换到原唱 */
+    setOriginal(v) { _isOriginal = true;  apply(v); return mode; },
+    /** 切换到伴唱 */
+    setAccompaniment(v) { _isOriginal = false; apply(v); return mode; },
+    /** 当前是否原唱 */
+    get isOriginal() { return _isOriginal; },
+    /** 当前模式 */
+    get mode() { return mode; },
+    /** 应用均衡器预设；未初始化(还没播放过歌)时返回 false，由调用方决定怎么提示 */
+    setEQPreset(name) {
+      if (!waReady || !eqLow) return false;
+      const g = EQ_PRESETS[name] || EQ_PRESETS.flat;
+      eqLow.gain.value = g[0]; eqMid.gain.value = g[1]; eqHigh.gain.value = g[2];
+      return true;
+    },
+  };
+})();
+
+// 首次用户交互激活 Web Audio（必须，浏览器安全策略）
+document.addEventListener('click', () => VoiceManager.wake(video), { once: false, passive: true });
+// 新歌加载后重新检测，trackCount 由服务端 ffprobe 探测得出，见 renderAll() 里 curSong 的赋值
+video.addEventListener('loadedmetadata', () => VoiceManager.onLoad(video, curSong && curSong.audio_tracks));
+// 拼音映射
+const PM={"啊":"A","阿":"A","爱":"A","安":"A","暗":"A","岸":"A","昂":"A","傲":"A","澳":"A","哎":"A","唉":"A","挨":"A","艾":"A","按":"A","案":"A","把":"B","八":"B","吧":"B","白":"B","百":"B","拜":"B","班":"B","伴":"B","半":"B","帮":"B","包":"B","宝":"B","保":"B","报":"B","爸":"B","背":"B","被":"B","本":"B","比":"B","彼":"B","别":"B","变":"B","冰":"B","病":"B","步":"B","布":"B","不":"B","波":"B","博":"B","奔":"B","笔":"B","标":"B","才":"C","唱":"C","超":"C","沉":"C","成":"C","城":"C","出":"C","春":"C","层":"C","灿":"C","参":"C","差":"C","残":"C","草":"C","彩":"C","仓":"C","曾":"C","丛":"C","此":"C","词":"C","从":"C","存":"C","长":"C","称":"C","初":"C","创":"C","除":"C","曹":"C","采":"C","大":"D","当":"D","道":"D","地":"D","第":"D","懂":"D","多":"D","断":"D","带":"D","动":"D","等":"D","的":"D","登":"D","都":"D","对":"D","独":"D","淡":"D","蝶":"D","跌":"D","灯":"D","点":"D","额":"E","而":"E","恩":"E","鹅":"E","呢":"E","俄":"E","发":"F","飞":"F","分":"F","风":"F","父":"F","复":"F","放":"F","方":"F","烦":"F","飘":"F","奋":"F","赴":"F","费":"F","封":"F","丰":"F","富":"F","感":"G","高":"G","个":"G","给":"G","更":"G","光":"G","归":"G","过":"G","国":"G","跟":"G","共":"G","孤":"G","挂":"G","贵":"G","滚":"G","干":"G","刚":"G","格":"G","歌":"G","还":"H","海":"H","好":"H","和":"H","后":"H","花":"H","回":"H","害":"H","恨":"H","红":"H","很":"H","含":"H","欢":"H","黄":"H","喉":"H","呼":"H","怀":"H","家":"J","见":"J","今":"J","经":"J","就":"J","记":"J","旧":"J","解":"J","几":"J","敬":"J","降":"J","吉":"J","将":"J","进":"J","静":"J","角":"J","坚":"J","开":"K","看":"K","哭":"K","快":"K","苦":"K","靠":"K","空":"K","可":"K","跨":"K","来":"L","浪":"L","老":"L","乐":"L","了":"L","里":"L","留":"L","落":"L","泪":"L","蓝":"L","凉":"L","恋":"L","路":"L","旅":"L","懒":"L","没":"M","明":"M","梦":"M","面":"M","迷":"M","美":"M","满":"M","慢":"M","么":"M","莫":"M","那":"N","年":"N","你":"N","难":"N","念":"N","南":"N","哪":"N","哦":"O","噢":"O","欧":"O","旁":"P","漂":"P","平":"P","片":"P","起":"Q","前":"Q","千":"Q","情":"Q","轻":"Q","去":"Q","求":"Q","亲":"Q","其":"Q","切":"Q","然":"R","让":"R","热":"R","人":"R","忍":"R","柔":"R","三":"S","伤":"S","上":"S","少":"S","失":"S","说":"S","随":"S","生":"S","声":"S","思":"S","是":"S","岁":"S","太":"T","特":"T","天":"T","听":"T","同":"T","头":"T","痛":"T","万":"W","为":"W","我":"W","无":"W","往":"W","忘":"W","晚":"W","想":"X","象":"X","小":"X","心":"X","星":"X","现":"X","希":"X","寻":"X","也":"Y","一":"Y","已":"Y","忆":"Y","因":"Y","用":"Y","又":"Y","有":"Y","眼":"Y","烟":"Y","要":"Y","云":"Y","以":"Y","遥":"Y","夜":"Y","鱼":"Y","再":"Z","在":"Z","找":"Z","真":"Z","中":"Z","走":"Z","总":"Z","紫":"Z","知":"Z","赵":"Z","张":"Z","郑":"Z","周":"Z","庄":"Z","怎":"Z","醉":"Z"};
+const PB=[['啊','A'],['芭','B'],['擦','C'],['搭','D'],['蛾','E'],['发','F'],['噶','G'],['哈','H'],['击','J'],['喀','K'],['垃','L'],['妈','M'],['拿','N'],['哦','O'],['啪','P'],['期','Q'],['然','R'],['撒','S'],['塌','T'],['挖','W'],['昔','X'],['压','Y'],['匝','Z']];
+function getPY(char){if(!char)return'#';const c=char.charCodeAt(0);if(c<0x4E00||c>0x9FFF)return/[A-Za-z]/.test(char)?char.toUpperCase():'#';if(PM[char])return PM[char];try{for(let i=PB.length-1;i>=0;i--)if(char.localeCompare(PB[i][0],'zh-CN',{sensitivity:'base'})>=0)return PB[i][1];}catch(e){}return'#';}
+// 把整个字符串逐字转成拼音首字母并拼接，例如"水中花"->"SZH"。
+// 空白字符直接跳过（不产生占位符），这样"水 中 花"这类带空格的标题拼出来的
+// 首字母序列依然是连续的"SZH"，不会被空格打断导致匹配不上。
+function getInitials(str){let out='';for(const ch of String(str||'')){if(/\s/.test(ch))continue;out+=getPY(ch);}return out;}
+// 状态
+let queueData=[],curSong=null,isPaused=false,isFS=false,endingNotified=false;
+let hlsInstance=null;
+function destroyHls(){if(hlsInstance){try{hlsInstance.destroy();}catch(e){}hlsInstance=null;}}
+// 加载一首新歌：优先用 hls.js 播放 HLS(master.m3u8 里声明的每条音轨都是独立分片，
+// 切音轨/拖进度条都不会打断视频)；hls.js 不可用但浏览器原生支持 HLS(如 Safari)则
+// 直接把 src 指过去；两者都不支持时兜底退回旧的整段直传接口(仅默认音轨，无法切换)。
+function loadSong(v,songId){
+  hideToast();
+  document.getElementById('video-loading').classList.add('show');
+  destroyHls();
+  const url=`${BASE}/hls/${songId}/master.m3u8`;
+  const fallbackToRaw=()=>{
+    destroyHls();
+    v.src=`${BASE}/stream/${songId}`;
+    if(!isPaused)v.play().catch(()=>{});
+  };
+  if(window.Hls&&Hls.isSupported()){
+    // 服务端现在是"渐进式"生成 HLS：一首歌刚点开时，子播放列表(video.m3u8/
+    // audioN.m3u8)可能还没写入 #EXT-X-ENDLIST(转码仍在后台进行中)，hls.js
+    // 会按它默认的"直播流"启发式规则，把起播位置定到已知分片的末尾附近，
+    // 而不是从头开始——对 KTV 场景这是绝对不能接受的(唱到一半才进画面)。
+    // 显式指定 startPosition:0 强制从第 0 秒起播，转码完成后(出现
+    // ENDLIST)也不受影响，继续正常播放/寻址。
+    const hls=new Hls({ startPosition: 0 });
+    hls.on(Hls.Events.ERROR,(_,data)=>{
+      console.error('[hls]',data.type,data.details);
+      // 致命错误(清单/分片加载失败、当前源文件编码在容器里放不下等)：不再死等，
+      // 直接回退到旧的直传接口兜底，保证至少能听到/看到默认音轨，不会一直黑屏。
+      if(data.fatal&&curSong&&curSong.song_id===songId){
+        console.warn('[hls] 致命错误，回退到直传接口:',songId);
+        fallbackToRaw();
+      }
+    });
+    hls.on(Hls.Events.MANIFEST_PARSED,()=>{if(!isPaused)v.play().catch(()=>{});});
+    hls.loadSource(url);
+    hls.attachMedia(v);
+    hlsInstance=hls;
+  }else if(v.canPlayType('application/vnd.apple.mpegurl')){
+    v.src=url;
+    v.addEventListener('error',fallbackToRaw,{once:true});
+    if(!isPaused)v.play().catch(()=>{});
+  }else{
+    fallbackToRaw();
+  }
+}
+window.ktv_fs=false;
+// WS
+function setConnStatus(ok){
+  const el=document.getElementById('conn-status');
+  if(!el)return;
+  el.classList.toggle('ok',ok);
+  el.classList.toggle('bad',!ok);
+  document.getElementById('conn-icon').innerHTML=ok
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>';
+  document.getElementById('conn-lbl').textContent=ok?'在线':'连接中…';
+  el.title=ok?'已连接到后端服务器':'与后端服务器连接已断开，正在自动重连…';
+}
+function connectWS(){const ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);ws.onopen=()=>setConnStatus(true);ws.onmessage=ev=>{const m=JSON.parse(ev.data);if(m.type==='queue'){queueData=m.data;renderAll();}if(m.type==='control')handleRemote(m);};ws.onclose=()=>{setConnStatus(false);setTimeout(connectWS,2000);};ws.onerror=()=>setConnStatus(false);window._ws=ws;}
+connectWS();
+function renderAll(){
+  const playing=queueData.find(q=>q.status==='playing');
+  document.getElementById('qbadge').textContent=queueData.length;
+  document.getElementById('rq-cnt').textContent=queueData.length+'首';
+  const rq=document.getElementById('rq-list');
+  if(!queueData.length){rq.innerHTML='<div style="color:var(--sub);font-size:16px;text-align:center;padding:16px">暂无点歌</div>';}
+  else{rq.innerHTML='';queueData.forEach(q=>{const d=document.createElement('div');d.className='rq-i'+(q.status==='playing'?' rq-p':'');d.innerHTML=`<div class="rq-t">${q.status==='playing'?'♪ ':''}${q.title}</div><div class="rq-m">${q.artist||''} · ${q.nickname}</div>`;rq.appendChild(d);});}
+  if(isFS&&document.getElementById('fsq').classList.contains('open'))renderFsQueue();
+  if(document.getElementById('pd-queue').classList.contains('open'))loadQueue();
+  if(playing){
+    document.getElementById('now-idle').style.display='none';video.style.display='block';
+    document.getElementById('now-info').classList.add('show');
+    document.getElementById('ni-title').textContent=playing.title;
+    document.getElementById('ni-meta').textContent=`${playing.artist||''} · ${playing.nickname}`;
+    document.getElementById('ov-title').textContent=playing.title;
+    document.getElementById('ov-artist').textContent=`${playing.artist||''} · ${playing.nickname}`;
+    if(!curSong||curSong.queue_id!==playing.queue_id){curSong=playing;loadSong(video,playing.song_id);endingNotified=false;}
+  }else{document.getElementById('now-idle').style.display='flex';video.style.display='none';document.getElementById('now-info').classList.remove('show');document.getElementById('video-loading').classList.remove('show');hideToast();curSong=null;destroyHls();video.removeAttribute('src');video.load();
+    if(isFS)exitKtvFullscreen();}
+}
+// 播放
+// 播放/暂停按钮图标+文案的唯一更新入口：只由 <video> 的原生 play/pause 事件驱动，
+// 不管播放状态因为什么原因发生变化(用户点击、自动播放成功、自动播放被浏览器策略
+// 拦截、系统媒体键等)，都能反映真实状态，而不是在每个"调用播放"的地方各自假设
+// 结果一定成功。
+function syncPauseUI(){
+  isPaused=video.paused;
+  const playIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/></svg>';
+  const pauseIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="10"/><line x1="10" y1="8" x2="10" y2="16"/><line x1="14" y1="8" x2="14" y2="16"/></svg>';
+  document.getElementById('picon').innerHTML=isPaused?playIcon:pauseIcon;
+  document.getElementById('op-icon').innerHTML='<svg viewBox="0 0 24 24" fill="currentColor">'+(isPaused?'<polygon points="5 3 19 12 5 21 5 3"/>':'<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>')+'</svg>';
+  document.getElementById('plbl2').textContent=isPaused?'播放':'暂停';
+  const opLbl=document.getElementById('op-lbl');if(opLbl)opLbl.textContent=isPaused?'继续':'暂停';
+}
+video.addEventListener('play',syncPauseUI);
+video.addEventListener('playing',()=>document.getElementById('video-loading').classList.remove('show'));
+video.addEventListener('pause',syncPauseUI);
+function togglePause(){VoiceManager.wake(video);if(video.paused)video.play().catch(()=>{});else video.pause();}
+function cutSong(){fetch('/api/queue/next',{method:'POST'});}
+function restartSong(){VoiceManager.wake(video);video.currentTime=0;isPaused=false;video.play().catch(()=>{});showToast('重唱 🔄');}
+function toggleVoice(){
+  if(VoiceManager.isOriginal) VoiceManager.setAccompaniment(video);
+  else VoiceManager.setOriginal(video);
+  // 按钮文案固定为"原/伴唱"，不再随状态在"原唱"/"伴唱"之间切换文字；
+  // 是否处于伴唱模式仅通过 .act 高亮样式区分。
+  document.getElementById('btn-voice').classList.toggle('act',!VoiceManager.isOriginal);
+  document.getElementById('ob-voice').classList.toggle('act',!VoiceManager.isOriginal);
+  showToast('原/伴唱已切换');
+}
+// 均衡器：预设需要 Web Audio 已初始化（即已经播放过一次视频、发生过一次点击手势），
+// 没播过歌时直接提示，而不是静默失败让用户以为点了没反应。
+function setEQ(name){
+  const ok=VoiceManager.setEQPreset(name);
+  if(!ok){showToast('请先点一首歌播放后再调整均衡器');return;}
+  document.querySelectorAll('.eq-opt').forEach(el=>el.classList.toggle('sel',el.dataset.eq===name));
+  const label={flat:'标准',vocal:'人声增强',bass:'低音增强',bright:'明亮清晰'}[name]||name;
+  showToast('均衡器：'+label);
+}
+// 音量：直接调 video.volume（0~1），每次±0.1，钳制范围避免溢出
+function adjVolume(delta){
+  video.volume=Math.max(0,Math.min(1,Math.round((video.volume+delta)*10)/10));
+  showToast('🔊 音量 '+Math.round(video.volume*100)+'%');
+}
+video.addEventListener('timeupdate',()=>{if(!video.duration)return;document.getElementById('prog-fill').style.width=(video.currentTime/video.duration*100)+'%';document.getElementById('tcur').textContent=fmt(video.currentTime);document.getElementById('ttot').textContent=fmt(video.duration);
+  // 歌曲快结束提示：还剩最后15秒时提一次(每首歌只提一次，切歌/换歌会重置)，
+  // 有排队中的下一首就报歌名，没有就提醒继续点歌，别冷场。
+  if(!endingNotified&&video.duration-video.currentTime<=15&&video.currentTime>0){
+    endingNotified=true;
+    const upcoming=queueData.filter(q=>q.status!=='playing');
+    if(upcoming.length)showToast(`🎵 下一首：《${upcoming[0].title}》`,true);
+    else showToast('🎤 快没歌了，继续点歌吧～',true);
+  }
+});
+function fmt(s){return`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;}
+function seekVideo(e){const b=document.getElementById('prog-bar');video.currentTime=(e.offsetX/b.clientWidth)*(video.duration||0);}
+// 同一首歌只允许触发一次"切下一首"的请求，不管这次是由 ended 事件触发的，
+// 还是由下面的兜底检测触发的，避免重复调用 /api/queue/next 把队列多切一首。
+let advancedForQueueId=null;
+function advanceToNextSong(){
+  if(!curSong||advancedForQueueId===curSong.queue_id)return;
+  advancedForQueueId=curSong.queue_id;
+  isPaused=false; // 自然播完触发的自动切歌≠用户暂停意图，下一首要正常自动播放
+  fetch('/api/queue/next',{method:'POST'});
+}
+video.addEventListener('ended',advanceToNextSong);
+// 兜底检测：渐进式生成的 HLS 用的是 event 类型播放列表，hls.js 会先把它当"直播流"
+// 处理，等转码完成追加 #EXT-X-ENDLIST 后才转成"点播"语义——这个状态转换在个别
+// 时序下没能让 <video> 正确触发原生 ended 事件，画面会卡在最后一帧但不报任何错，
+// ended 永远不触发，/api/queue/next 也就永远没被调用，表现就是"播完不自动切下一首"。
+// 这里不依赖 ended，也不依赖 video.duration(直播语义下的 duration 本来就不可靠，
+// 常见是 Infinity)，而是每秒检查"播放位置是否已经追到当前已缓冲区间的末尾，且这
+// 个末尾连续几秒都没有再增长"——这才是"这首歌真的没有更多内容了"的可靠判定依据，
+// 不管 ended 有没有正常触发都能兜底切歌；用户手动暂停时不检测，避免误切。
+let stallBufEnd=-1,stallStableCount=0;
+setInterval(()=>{
+  if(!curSong||video.paused)return;
+  const buf=video.buffered;
+  if(!buf.length)return;
+  const bufEnd=buf.end(buf.length-1);
+  const nearEnd=video.currentTime>=bufEnd-0.5;
+  if(nearEnd&&Math.abs(bufEnd-stallBufEnd)<0.05)stallStableCount++;
+  else stallStableCount=0;
+  stallBufEnd=bufEnd;
+  if(nearEnd&&stallStableCount>=4)advanceToNextSong();
+},1000);
+// Bug4修复：全屏（video移至body，fs-tap点击层，ktv_fs）
+const fsOv=document.getElementById('fs-ov'),fsTap=document.getElementById('fs-tap');
+let ovTimer;
+// Bug7修复：主页焦点记忆功能未生效。
+// openPanel/openPF/closePanel/closePF 等所有"打开/关闭二级面板"的入口都会调用
+// pushFocus()/popFocus() 来记住/还原主页当时的焦点位置，唯独进入/退出全屏播放
+// 这一条路径（enterFullscreen/exitKtvFullscreen）从来没接这套机制——从全屏返回后，
+// focIdx 还停留在全屏控制层内部的编号，被直接拿去索引主页的 getFocusables() 数组，
+// 落点基本是随机的，看起来就是"记不住主页原来选的是哪个"。
+// 修复：pushFocus() 必须在 isFS 被设为 true 之前调用（getFocusables() 一旦发现
+// isFS 为真就会切换到全屏层的候选范围，再想拿到主页当时的焦点就晚了）；
+// popFocus() 则要在 isFS 已经改回 false 之后调用，原理相反。
+// Bug修复：进入全屏 / 退出全屏回到主界面都会把 <video> 挪到不同的父节点下
+// (document.body <-> #now-panel)，这台电视浏览器在"挪动"一个正在播放的
+// <video> 元素时(哪怕只是 appendChild/insertBefore，没有重新赋值 src)，会连带
+// 把它的播放状态重置/暂停掉。这里记录挪动前的播放位置和播放/暂停状态，挪动后
+// 立即尝试恢复；同时用一个短延时兜底再恢复一次，防止这台电视浏览器是"挪动后
+// 异步才触发重置"，来不及被同步恢复覆盖掉。
+function restoreVideoPlayback(wasPlaying, t) {
+  if (Math.abs(video.currentTime - t) > 0.3) video.currentTime = t;
+  if (wasPlaying && video.paused) video.play().catch(() => {});
+}
+function enterFullscreen(){if(!curSong){showToast('先点一首歌吧 🎵');return;}pushFocus();isFS=true;window.ktv_fs=true;
+  var wasPlaying=!video.paused,t=video.currentTime;
+  document.body.appendChild(video);video.className='video-fs';
+  restoreVideoPlayback(wasPlaying,t);setTimeout(function(){restoreVideoPlayback(wasPlaying,t);},120);
+  if(window.__fitViewport)window.__fitViewport();fsTap.classList.add('on');showOverlay();}
+// Bug修复：这里原来叫 exitFullscreen()，通过 onclick="exitFullscreen()" 内联属性调用时，
+// 浏览器会把 document 隐式加入该处理函数的作用域链（相当于 with(document){ ... }），
+// 而 Document 接口本身就有一个原生方法 document.exitFullscreen()（全屏 API）。
+// 于是同名的全局函数被原生方法"遮蔽"了：点击主页/返回按钮实际调用的是浏览器原生的
+// document.exitFullscreen()，因为本应用是用 CSS 模拟的"伪全屏"（并未调用过
+// requestFullscreen()），浏览器没有真正处于全屏状态，原生方法直接报错/静默失败，
+// 我们自己写的退出逻辑根本没有机会执行——这就是"点击无效"的真正原因。
+// 键盘(f键)和遥控器(WS remote 'home'/'fullscreen'/'back')之所以不受影响，是因为
+// 它们是在 <script> 里直接调用函数名，走的是普通词法作用域，不会被 document 遮蔽，
+// 只有 onclick="..." 这种内联事件属性才会踩到这个坑。
+// 修复方式：把自定义函数改名为 exitKtvFullscreen，彻底避开与原生 API 的命名冲突。
+function exitKtvFullscreen(){isFS=false;window.ktv_fs=false;
+  var wasPlaying=!video.paused,t=video.currentTime;
+  video.className='video-home';video.style.width='';video.style.height='';nowPanel.insertBefore(video,nowPanel.firstChild);
+  restoreVideoPlayback(wasPlaying,t);setTimeout(function(){restoreVideoPlayback(wasPlaying,t);},120);
+  fsTap.classList.remove('on');fsOv.classList.remove('show');document.getElementById('fsq').classList.remove('open');clearTimeout(ovTimer);popFocus();}
+// Bug1修复：showOverlay 被 keydown 全局监听、moveFocus 结尾等多处频繁调用（用于顺带
+// "续命"隐藏计时器），但原代码每次调用都无条件把 focIdx 重置为0。于是每次按方向键时，
+// keydown 处理函数先调用一次 showOverlay()（把 focIdx 归零），紧接着 moveFocus 才用这个
+// 被归零的 focIdx 去 +1/-1 计算新焦点——结果永远是 (0+1)%N=1（重唱）或 (0-1+N)%N=N-1（队列），
+// 其它按钮永远轮不到。修复：只有"从隐藏变为显示"的那一次才需要重置焦点，已经显示时的
+// 刷新（保活计时器）不应该改变当前焦点位置。
+function showOverlay(){fsTap.classList.remove('on');const wasHidden=!fsOv.classList.contains('show');fsOv.classList.add('show');clearTimeout(ovTimer);ovTimer=setTimeout(hideOverlay,5000);if(wasHidden)focIdx=0;}
+function hideOverlay(){fsOv.classList.remove('show');if(isFS)fsTap.classList.add('on');}
+fsOv.addEventListener('click',e=>{if(!e.target.closest('.ob,#ov-back,#prog-bar')){clearTimeout(ovTimer);ovTimer=setTimeout(hideOverlay,5000);}});
+function toggleFsQueue(){const q=document.getElementById('fsq');q.classList.toggle('open');if(q.classList.contains('open'))renderFsQueue();}
+function closeFsQueue(){document.getElementById('fsq').classList.remove('open');}
+function renderFsQueue(){const el=document.getElementById('fsq-list');el.innerHTML='';if(!queueData.length){el.innerHTML='<div style="color:var(--sub);font-size:16px;text-align:center;padding:20px">暂无点歌</div>';return;}queueData.forEach(q=>{const d=document.createElement('div');d.className='fsq-row'+(q.status==='playing'?' fsq-p':'');d.innerHTML=`<div class="fsq-t">${q.status==='playing'?'♪ ':''}${q.title}</div><div class="fsq-m">${q.artist||''} · ${q.nickname}</div>`;el.appendChild(d);});}
+// 焦点记忆栈：进入任何二级/三级面板前，把当前屏幕正焦点的元素记下来，
+// 退出时尝试把焦点还原到原来那个元素上，而不是每次都跳回默认起点。
+let focusStack=[];
+function pushFocus(){
+  const cur=getFocusables();
+  focusStack.push(cur[focIdx]||null);
+}
+function popFocus(){
+  const prev=focusStack.pop();
+  const cur=getFocusables();
+  focEls=cur;
+  const idx=prev?cur.indexOf(prev):-1;
+  focIdx=idx>=0?idx:0;
+  cur.forEach(e=>e.classList.remove('focused'));
+  if(cur[focIdx]){cur[focIdx].classList.add('focused');cur[focIdx].scrollIntoView({block:'nearest'});}
+}
+// Bug3修复：搜索框在打开面板时会拿到真实的输入焦点(用来唤出输入法方便打字)，
+// 但遥控器只是切换一个 CSS class 来模拟"焦点"，从不会让输入框失焦——所以只要
+// 进过一次搜索面板，输入框会一直霸占真实焦点，之后不管遥控点选哪个按钮，
+// 电视浏览器发现真实焦点还在输入框上就会弹输入法。这里统一在失焦真正需要
+// 发生的时机（离开输入框去做方向导航 / 关闭面板）主动 blur 掉它。
+function blurRealInput(){const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA)$/.test(a.tagName))a.blur();}
+// Bug4修复：closeTopPanel 不再自己绕过 closePF/closePanel 直接摘 'open' class，
+// 而是统一按名字调用它们——这样子面板(如歌星->某歌手的歌曲列表)在按物理
+// 遥控器"返回"键关闭时，也能像点击面板内"返回"按钮一样正确回到父面板，
+// 而不是直接被打回主页；同时焦点记忆栈(pushFocus/popFocus)也能一并生效。
+function closeTopPanel(){
+  const fsq=document.getElementById('fsq');
+  if(fsq.classList.contains('open')){fsq.classList.remove('open');return;}
+  const openFull=document.querySelector('.pd-full.open');
+  if(openFull){closePF(openFull.id.replace('pf-',''));return;}
+  const openHalf=document.querySelector('.pd.open');
+  if(openHalf){closePanel(openHalf.id.replace('pd-',''));return;}
+  if(video.classList.contains('video-fs')){exitKtvFullscreen();return;}
+  // Bug8：已经退到主页顶层了，没有任何弹窗/全屏可以再关——这里走"再按一次返回退出"
+  // 的确认流程，而不是什么都不做（之前就是什么都不做，相当于返回键在主页完全失效）。
+  if(window.__handleHomeBack)window.__handleHomeBack();
+}
+// 返回键退出确认：主页顶层再按一次返回键，2秒内确认则尝试退出。
+// 纯网页在浏览器标签页里通常没有脚本可调用的"关闭自己"的标准方式（出于安全策略，
+// window.close() 只对脚本自己打开的窗口生效），这里把已知的几种宿主环境退出方式都
+// 尝试一遍(WebView 注入的原生桥接对象、window.close())，都不支持时至少给出明确提示，
+// 不会让用户以为按了没反应。
+(function(){
+  let backArmed=false,backTimer=null;
+  function armBack(){
+    backArmed=true;
+    showToast('再按一次返回键退出');
+    clearTimeout(backTimer);
+    backTimer=setTimeout(()=>{backArmed=false;},2000);
+  }
+  function doExitAttempt(){
+    if(window.Android&&typeof window.Android.exitApp==='function'){window.Android.exitApp();return;}
+    if(window.AndroidTV&&typeof window.AndroidTV.exitApp==='function'){window.AndroidTV.exitApp();return;}
+    try{window.close();}catch(e){}
+    setTimeout(()=>{showToast('无法自动退出，请用遥控器主页/桌面键返回');},200);
+  }
+  window.__handleHomeBack=function(){
+    if(backArmed){doExitAttempt();return;}
+    armBack();
+  };
+  // 拦截物理返回键/浏览器后退：不断在历史栈里"钉"住当前页，用户按返回时触发的是
+  // popstate 而不是真的离开页面，借这个时机统一走 closeTopPanel()，和遥控器"返回"、
+  // 键盘 Esc 三条路径最终收敛到同一套关闭/退出确认逻辑。
+  history.pushState(null,'',location.href);
+  window.addEventListener('popstate',function(){
+    history.pushState(null,'',location.href);
+    closeTopPanel();
+  });
+})();
+// 面板
+function openPanel(name){pushFocus();document.querySelectorAll('.pd').forEach(p=>p.classList.remove('open'));document.getElementById(`pd-${name}`).classList.add('open');focIdx=0;const loaders={queue:loadQueue,charts:loadCharts,search:()=>{document.getElementById('si').focus();doSearch('');},settings:loadSettings};if(loaders[name])loaders[name]();}
+function closePanel(n){document.getElementById(`pd-${n}`).classList.remove('open');blurRealInput();popFocus();}
+function openPF(name){pushFocus();document.querySelectorAll('.pd-full').forEach(p=>p.classList.remove('open'));document.getElementById(`pf-${name}`).classList.add('open');focIdx=0;const inits={artists:initArtists,order:initOrder,history:initHistory,favorites:initFavorites};if(inits[name])inits[name]();}
+// Bug5修复：点选某个歌手后，之前是直接对 pf-artist-songs 做 classList.add('open')，
+// 没有把 pf-artists 关掉——两个 .pd-full 面板同时带 'open'，getFocusables() 里
+// document.querySelector('.pd-full.open') 只会拿到 DOM 顺序里第一个匹配的
+// (还是歌星网格那个)，导致遥控器上下左右移动的其实是被歌曲列表盖住的歌星
+// 网格，看起来"选完歌手却点不到歌"，要按一次返回让重复的 open 消掉之后才恢复
+// 正常。现在统一走 openPF 同款的"只留一个面板处于 open"逻辑。
+function openArtistSongs(artist){
+  pushFocus();
+  document.getElementById('pf-artists').classList.remove('open');
+  document.getElementById('as-title').textContent='🎤 '+artist;
+  document.getElementById('pf-artist-songs').classList.add('open');
+  focIdx=0;
+  fetch(`/api/songs?artist=${encodeURIComponent(artist)}`).then(r=>r.json()).then(s=>renderSongs(document.getElementById('as-list'),s));
+}
+function closePF(name){
+  document.getElementById(`pf-${name}`).classList.remove('open');
+  // 关子面板后若父面板存在则保持
+  const map={'artist-songs':'artists'};
+  if(map[name])document.getElementById(`pf-${map[name]}`).classList.add('open');
+  blurRealInput();
+  popFocus();
+}
+// 字母处理（通用）
+function handleAlpha(prefix,k){
+  const txtEl=document.getElementById(`${prefix}-keys-txt`);
+  document.querySelectorAll(`#${prefix}-keys .ak`).forEach(b=>b.classList.remove('sel'));
+  if(k==='DEL'){
+    // 退格：每点一次删掉最后一个字符，而不是一次性清空整个已输入的首字母序列，
+    // 这样打错一个字母不用整个重来。
+    alphaState[prefix]=(alphaState[prefix]||'').slice(0,-1);
+    if(txtEl)txtEl.textContent=alphaState[prefix]||ALPHA_PLACEHOLDER[prefix];
+  }else{
+    // 累积多次点击的字母，例如先点 S 再点 Z 再点 H 拼成"SZH"，可以搜到
+    // 像"水中花"这种每个字首字母依次是 S/Z/H 的歌曲/歌手，而不再只能按
+    // 标题第一个字的首字母做单字匹配。
+    alphaState[prefix]=(alphaState[prefix]||'')+k;
+    if(txtEl)txtEl.textContent=alphaState[prefix];
+    event&&event.target&&event.target.classList.add('sel');
+  }
+  alphaFilter[prefix]();
+}
+const ALPHA_PLACEHOLDER={ar:'歌星搜索',od:'歌名搜索',hs:'常唱搜索',fv:'收藏搜索'};
+const alphaState={};
+const alphaFilter={};
+// 歌星
+const AV_COLORS=['linear-gradient(135deg,#ff4f9b,#ff2255)','linear-gradient(135deg,#ff8c42,#ffd000)','linear-gradient(135deg,#8e44f7,#c736f7)','linear-gradient(135deg,#36a9f7,#36d9f7)','linear-gradient(135deg,#36f7a0,#00c9a7)','linear-gradient(135deg,#1a4bff,#36d9f7)','linear-gradient(135deg,#ff6b6b,#feca57)','linear-gradient(135deg,#f7366a,#f73699)'];
+const AG_COLS=6; // 要和 .ag 网格的 grid-template-columns 列数保持一致
+let allArtists=[],filtArtists=[];
+alphaState['ar']='';
+alphaFilter['ar']=()=>{const q=alphaState['ar'];filtArtists=!q?[...allArtists]:allArtists.filter(a=>getInitials(a.artist).startsWith(q));renderArtists();};
+async function initArtists(){if(!allArtists.length){allArtists=await fetch('/api/artists').then(r=>r.json());sortArtistsByPinyin(allArtists);}alphaState['ar']='';filtArtists=[...allArtists];document.getElementById('ar-keys-txt').textContent=ALPHA_PLACEHOLDER['ar'];document.querySelectorAll('#ar-keys .ak').forEach(b=>b.classList.remove('sel'));renderArtists();}
+// 按歌手名第一个字的拼音首字母排序（A-Z），首字母相同的再按完整名称排序，
+// 让"歌星"列表呈现出常见的拼音首字母顺序，而不是接口返回的原始顺序。
+function sortArtistsByPinyin(list){
+  list.sort((a,b)=>{
+    const pa=getPY(a.artist.charAt(0)),pb=getPY(b.artist.charAt(0));
+    if(pa!==pb)return pa<pb?-1:1;
+    return a.artist.localeCompare(b.artist,'zh-CN');
+  });
+}
+function renderArtists(){
+  const g=document.getElementById('artist-grid');g.innerHTML='';
+  if(!filtArtists.length){g.innerHTML='<div style="color:var(--sub);text-align:center;padding:30px;grid-column:span 6">没有找到歌手</div>';return;}
+  filtArtists.forEach((a,i)=>{
+    const c=document.createElement('div');c.className='ag-card';c.setAttribute('data-f','');
+    const rowIdx=Math.floor(i/AG_COLS);
+    c.innerHTML=`<div class="ag-av" style="background:${AV_COLORS[rowIdx%AV_COLORS.length]}">${a.artist.charAt(0)}</div><div class="ag-name">${a.artist}</div><div class="ag-cnt">${a.count}首</div>`;
+    c.onclick=()=>openArtistSongs(a.artist);
+    g.appendChild(c);
+  });
+}
+// 点歌
+let allSongs=[],filtSongs=[];
+alphaState['od']='';
+alphaFilter['od']=()=>{const q=alphaState['od'];filtSongs=!q?[...allSongs]:allSongs.filter(s=>getInitials(s.title).startsWith(q));renderOrder();};
+async function initOrder(){if(!allSongs.length)allSongs=await fetch('/api/songs').then(r=>r.json());alphaState['od']='';filtSongs=[...allSongs];document.getElementById('od-keys-txt').textContent=ALPHA_PLACEHOLDER['od'];document.querySelectorAll('#od-keys .ak').forEach(b=>b.classList.remove('sel'));renderOrder();}
+function renderOrder(){renderSongs(document.getElementById('order-song-list'),filtSongs);}
+// 常唱（Bug1修复：二级菜单）
+let allHist=[],filtHist=[],hsPg=0;const HS_PG=15;
+alphaState['hs']='';
+alphaFilter['hs']=()=>{const q=alphaState['hs'];filtHist=!q?[...allHist]:allHist.filter(s=>getInitials(s.title).startsWith(q));hsPg=0;renderHist();};
+async function initHistory(){allHist=await fetch('/api/history').then(r=>r.json());alphaState['hs']='';filtHist=[...allHist];hsPg=0;document.getElementById('hs-keys-txt').textContent=ALPHA_PLACEHOLDER['hs'];document.querySelectorAll('#hs-keys .ak').forEach(b=>b.classList.remove('sel'));renderHist();}
+function renderHist(){const t=Math.ceil(filtHist.length/HS_PG)||1;document.getElementById('hist-pg-info').textContent=`${hsPg+1}/${t} (共${filtHist.length}首)`;renderSongs(document.getElementById('hist-song-list'),filtHist.slice(hsPg*HS_PG,(hsPg+1)*HS_PG));}
+function histPage(d){const t=Math.ceil(filtHist.length/HS_PG)||1;hsPg=Math.max(0,Math.min(t-1,hsPg+d));renderHist();}
+// 收藏（Bug1修复：二级菜单）
+let allFav=[],filtFav=[],fvPg=0;const FV_PG=15;
+alphaState['fv']='';
+alphaFilter['fv']=()=>{const q=alphaState['fv'];filtFav=!q?[...allFav]:allFav.filter(s=>getInitials(s.title).startsWith(q));fvPg=0;renderFav();};
+async function initFavorites(){allFav=await fetch(`/api/favorites?device=${devId()}`).then(r=>r.json());alphaState['fv']='';filtFav=[...allFav];fvPg=0;document.getElementById('fv-keys-txt').textContent=ALPHA_PLACEHOLDER['fv'];document.querySelectorAll('#fv-keys .ak').forEach(b=>b.classList.remove('sel'));renderFav();}
+function renderFav(){const t=Math.ceil(filtFav.length/FV_PG)||1;document.getElementById('fav-pg-info').textContent=`${fvPg+1}/${t} (共${filtFav.length}首)`;renderSongs(document.getElementById('fav-song-list'),filtFav.slice(fvPg*FV_PG,(fvPg+1)*FV_PG));}
+function favPage(d){const t=Math.ceil(filtFav.length/FV_PG)||1;fvPg=Math.max(0,Math.min(t-1,fvPg+d));renderFav();}
+// Bug3修复：渲染歌曲列表（所有按钮加 data-f）
+function renderSongs(el,songs){
+  el.innerHTML='';
+  if(!songs.length){el.innerHTML='<div style="color:var(--sub);text-align:center;padding:30px">暂无歌曲</div>';return;}
+  songs.forEach((s,i)=>{
+    const fk='fav_'+s.id,isFaved=localStorage.getItem(fk)==='1';
+    const d=document.createElement('div');d.className='so-row';
+    d.innerHTML=`<div class="so-num">${i+1}</div>
+      <div class="so-info"><div class="so-t">${s.title}</div><div class="so-a">${s.artist||''}</div></div>
+      <div class="so-acts">
+        <button class="btn-fav${isFaved?' faved':''}" data-f onclick="toggleFav(${s.id},this)">❤</button>
+        <button class="btn-add" data-f onclick="addSong(${s.id},'${esc(s.title)}')">点歌</button>
+      </div>`;
+    el.appendChild(d);
+  });
+}
+async function toggleFav(id,btn){const key='fav_'+id,faved=localStorage.getItem(key)==='1';if(faved){await fetch(`/api/favorites/${id}?device=${devId()}`,{method:'DELETE'});localStorage.removeItem(key);btn.classList.remove('faved');showToast('已取消收藏');}else{await fetch(`/api/favorites/${id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device:devId()})});localStorage.setItem(key,'1');btn.classList.add('faved');showToast('已收藏 ❤');};allFav=[];}
+async function addSong(id,title){await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({song_id:id,nickname:'TV点歌'})});showToast(`《${title}》已加入队列 🎶`);}
+// 各面板加载
+function loadQueue(){const el=document.getElementById('pl-queue');el.innerHTML='';if(!queueData.length){el.innerHTML='<div style="color:#555;text-align:center;padding:30px">暂无点歌</div>';return;}queueData.forEach((q,i)=>{const d=document.createElement('div');d.className='qr-row'+(q.status==='playing'?' qrp':'');d.innerHTML=`<div class="qr-num">${q.status==='playing'?'♪':i+1}</div><div class="qr-info"><div class="qr-t">${q.title}</div><div class="qr-m">${q.artist||''} · ${q.nickname}${q.status==='playing'?' <span style="color:var(--ac)">播放中</span>':''}</div></div><div class="qr-acts">${q.status!=='playing'?`<button class="ma ma-top" data-f onclick="topQ(${q.queue_id})">置顶</button>`:''}<button class="ma ma-del" data-f onclick="delQ(${q.queue_id})">✕</button></div>`;el.appendChild(d);});}
+async function topQ(id){await fetch(`/api/queue/${id}/top`,{method:'POST'});}
+async function delQ(id){await fetch(`/api/queue/${id}`,{method:'DELETE'});}
+async function loadCharts(){const el=document.getElementById('pl-charts');el.innerHTML='';const songs=(await fetch('/api/charts').then(r=>r.json())).slice(0,10);if(!songs.length){el.innerHTML='<div style="color:#555;text-align:center;padding:30px">还没有人唱过歌</div>';return;}songs.forEach((s,i)=>{const d=document.createElement('div');d.className='chart-row';const rk=i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}`;d.innerHTML=`<div class="ck ${i<3?'r'+(i+1):''}"> ${rk}</div><div class="chart-info"><div class="ct">${s.title}</div><div class="cm">${s.artist||'未知歌手'}</div></div><span class="cp">${s.play_count}次</span><button class="btn-add" onclick="addSong(${s.id},'${esc(s.title)}')">点歌</button>`;el.appendChild(d);});}
+let st2;
+function doSearch(q){clearTimeout(st2);st2=setTimeout(async()=>{const songs=await fetch('/api/songs'+(q?`?q=${encodeURIComponent(q)}`:'')).then(r=>r.json());renderSongs(document.getElementById('pl-search'),songs);},220);}
+function loadSettings(){document.getElementById('s-host').textContent=location.host;fetch('/api/stats').then(r=>r.json()).then(d=>document.getElementById('s-songs').textContent=d.songCount+'首');}
+async function doScan(){showToast('扫描中…');let d;try{d=await fetch('/api/scan',{method:'POST'}).then(r=>r.json());}catch(e){showToast('⚠️ 扫描请求失败：'+e.message);return;}if(d.error==='MV_DIR_UNAVAILABLE'){showToast('⚠️ 曲库目录暂时无法访问，请检查挂载后重试');return;}if(d.ok===false){showToast('⚠️ 扫描出错：'+(d.error||'未知错误'));return;}showToast(`扫描完成：${d.total}首，新增${d.added}首，移除${d.removed||0}首`);allSongs=[];loadSettings();}
+// 遥控
+function handleRemote(m){switch(m.action){case 'play_pause':togglePause();break;case 'next':cutSong();break;case 'voice':toggleVoice();break;case 'repeat':restartSong();break;case 'fullscreen':isFS?exitKtvFullscreen():enterFullscreen();break;case 'home':if(isFS)exitKtvFullscreen();break;case 'focus_up':moveFocus('up');break;case 'focus_down':moveFocus('down');break;case 'focus_left':moveFocus('left');break;case 'focus_right':moveFocus('right');break;case 'ok':activateFocused();break;case 'back':closeTopPanel();break;}}
+// Fix2：全屏时焦点只在全屏覆盖层，主页时排除全屏层
+let focEls=[],focIdx=0;
+function getFocusables(){
+  // 全屏模式：焦点仅限全屏控制层
+  if(isFS){
+    const ov=document.getElementById('fs-ov');
+    if(!ov||!ov.classList.contains('show'))return[];
+    return Array.from(ov.querySelectorAll('[data-f]')).filter(el=>!!el.offsetParent);
+  }
+  // 打开的全屏面板：焦点仅限该面板内
+  const openPF=document.querySelector('.pd-full.open');
+  if(openPF){
+    return Array.from(openPF.querySelectorAll('[data-f]')).filter(el=>!!el.offsetParent);
+  }
+  // 打开的底部面板：焦点仅限该面板内
+  const openPD=document.querySelector('.pd.open');
+  if(openPD){
+    return Array.from(openPD.querySelectorAll('[data-f]')).filter(el=>!!el.offsetParent);
+  }
+  // 主页：排除全屏层与侧栏
+  return Array.from(document.querySelectorAll('[data-f]')).filter(el=>{
+    if(!el.offsetParent)return false;
+    if(el.closest('#fs-ov')||el.closest('#fsq'))return false;
+    return true;
+  });
+}
+// Bug 根本修复（遥控器上下和左右效果完全一样，不管是在首页、全屏控制层
+// 还是任何二级菜单/面板里，上下都没有真正按"上下"移动）：
+// 旧实现把四个方向全部简化成同一件事——"当前焦点列表里的上一个/下一个"
+// (d==='right'||d==='down' 就 +1，否则 -1)，完全没有用到任何元素在页面上
+// 的实际几何位置，所以"上""下"和"左""右"在效果上是完全等价的，多列/多行
+// 排列的二级菜单（比如歌星首字母表格、歌曲列表+右侧字母栏）里按上下键
+// 实际发生的是"跳到列表里下一项"而不是"移动到正下方的那一项"。
+// 新实现按元素的真实 getBoundingClientRect() 位置做二维方向导航：上下和
+// 左右各自独立判断"候选元素是否确实在目标方向上"，再在满足条件的候选里
+// 选一个综合距离最近的（主轴距离为主、副轴偏移为辅，避免上下移动却跳去
+// 很远的另一侧），这套逻辑对首页、全屏控制层、以及任何打开的二级菜单/
+// 面板都通用——getFocusables() 已经会根据当前处于哪一层来限定候选范围，
+// 这里只负责在这个范围内做"真上下真左右"的判断。
+function findNextFocus(cur, candidates, dir) {
+  const c = cur.getBoundingClientRect();
+  const cx = c.left + c.width / 2, cy = c.top + c.height / 2;
+  let best = null, bestScore = Infinity;
+  for (const el of candidates) {
+    if (el === cur) continue;
+    const r = el.getBoundingClientRect();
+    const ex = r.left + r.width / 2, ey = r.top + r.height / 2;
+    const dx = ex - cx, dy = ey - cy;
+    let ok, primary, secondary;
+    switch (dir) {
+      case 'up':    ok = dy < -1; primary = -dy; secondary = Math.abs(dx); break;
+      case 'down':  ok = dy > 1;  primary = dy;  secondary = Math.abs(dx); break;
+      case 'left':  ok = dx < -1; primary = -dx; secondary = Math.abs(dy); break;
+      case 'right': ok = dx > 1;  primary = dx;  secondary = Math.abs(dy); break;
+    }
+    if (!ok) continue;
+    // 副轴偏移权重更高一些：优先选"顺着方向、且另一个轴上位置也比较接近"
+    // 的目标，这样上下移动会稳定落在正下方/正上方那一列，而不是随便跳到
+    // 同方向最近但错位很远的元素。
+    const score = primary + secondary * 2;
+    if (score < bestScore) { bestScore = score; best = el; }
+  }
+  return best;
+}
+function moveFocus(d){
+  blurRealInput();
+  focEls=getFocusables();
+  if(!focEls.length)return;
+  if(focIdx>=focEls.length)focIdx=0;
+  focEls.forEach(e=>e.classList.remove('focused'));
+  const cur=focEls[focIdx];
+  const next=cur?findNextFocus(cur,focEls,d):null;
+  // 这个方向上确实没有可移动的目标时（比如已经在这一排/这一列的边缘），
+  // 保持停在当前焦点上，而不是像旧实现那样强行循环跳到列表另一端。
+  const target=next||cur||focEls[0];
+  focIdx=focEls.indexOf(target);
+  target.classList.add('focused');
+  target.scrollIntoView({block:'nearest'});
+  if(isFS)showOverlay();
+}
+function activateFocused(){blurRealInput();focEls=getFocusables();if(focEls[focIdx])focEls[focIdx].click();}
+document.addEventListener('keydown',e=>{if(isFS)showOverlay();switch(e.key){case 'ArrowUp':moveFocus('up');e.preventDefault();break;case 'ArrowDown':moveFocus('down');e.preventDefault();break;case 'ArrowLeft':moveFocus('left');e.preventDefault();break;case 'ArrowRight':moveFocus('right');e.preventDefault();break;case 'Enter':activateFocused();break;case ' ':togglePause();e.preventDefault();break;case 'Escape':closeTopPanel();break;case 'f':case 'F':isFS?exitKtvFullscreen():enterFullscreen();break;case 'n':case 'N':cutSong();break;}
+});
+function esc(s){return String(s||'').replace(/'/g,"&#39;");}
+function showToast(m,persist){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._hideTimer);if(!persist)t._hideTimer=setTimeout(()=>t.classList.remove('show'),1800);}
+function hideToast(){const t=document.getElementById('toast');clearTimeout(t._hideTimer);t.classList.remove('show');}
+// MV框保持3:2比例：老电视浏览器内核对 CSS aspect-ratio 支持不可靠（跟之前 inset
+// 简写属性一个坑），改用 JS 按 #now-panel 实际测量到的宽度算出3:2对应的高度，
+// 直接赋值 style.height，不依赖新特性。#now-col 是纵向flex容器，now-panel 定高后，
+// 剩下的空间自动都让给 #mv-ctrl（它是 flex:1），也就是"MV略微变矮、按钮区变大"。
+// DPI缩放补偿：getBoundingClientRect() 拿到的是"经过 body 那层 transform:scale
+// 缩放之后"的屏幕实际像素，而这里要赋值的 style.height 是缩放前的布局坐标系
+// (跟 style.width 等其它 CSS px 同一个坐标系)——如果直接拿缩放后的测量值去算
+// 高度再原样赋值，会被 body 的 transform 二次缩放，导致高DPI设备上 MV 框的
+// 高宽比整体跑偏。除以 window.__uiScale(fitViewport() 里算出的当前缩放系数，
+// 未启用缩放补偿时恒为1，行为和之前完全一致)把测量值换算回缩放前的坐标系，
+// 再计算 3:2 高度，才能保证任何 DPR 下最终呈现的高宽比都正确。
+function fitNowPanel(){
+  const panel=document.getElementById('now-panel');
+  if(!panel)return;
+  const scale=window.__uiScale||1;
+  const w=panel.getBoundingClientRect().width/scale;
+  if(!w)return;
+  panel.style.height=Math.round(w*2/3)+'px';
+}
+window.addEventListener('resize',fitNowPanel);
+window.addEventListener('orientationchange',fitNowPanel);
+fitNowPanel();
+setTimeout(fitNowPanel,300);
+setTimeout(fitNowPanel,1000);
+fetch('/api/queue').then(r=>r.json()).then(d=>{queueData=d;renderAll();});
+</script>
+</body>
+</html>

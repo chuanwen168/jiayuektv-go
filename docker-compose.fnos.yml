@@ -1,0 +1,75 @@
+# 飞牛系统（fnOS / x86）部署配置 — 对齐 1.2.0 功能
+#
+# 使用方法：
+#   1) 把本项目放到飞牛的任意目录（推荐 /vol1/1000/docker/ktvhome）
+#   2) SSH 到飞牛，进入项目目录执行：
+#        docker compose -f docker-compose.fnos.yml up -d --build
+#   3) 浏览器访问  http://飞牛IP:8084
+#
+# 1.2.0 新增功能：
+#   - ADMIN_PASSWORD：预置管理员密码（仅首次未设密码时生效，之后在后台改）
+#   - 多曲库：本地曲库挂 /mv/<名称>，网盘曲库挂 /mv-net/<名称>，挂载后在后台
+#     「曲库管理 → 曲库来源」逐个启用，才会参与扫描
+#   - 歌手头像：/singer 目录，图片名=歌手名（如 周杰伦.jpg），三端自动展示
+#   - NVENC：用 NVIDIA 显卡转码时打开注释段（代码自动探测 h264_nvenc）
+#
+# 集显（VAAPI）说明：
+#   devices 段把宿主机的 /dev/dri 直通进容器，Intel/AMD 核显、独显都能用
+#   h264_vaapi 硬件转码。若宿主机确实没有核显/独显，删除 devices 段，代码
+#   会自动回退 libx264 软件编码（CPU 占用高）。
+
+services:
+  jiayue-ktv:
+    build:
+      context: .
+      dockerfile: Dockerfile.single
+    image: jiayue-ktv-go:1.2.0
+    container_name: jiayue-ktv-go
+    restart: unless-stopped
+    # 使用 Docker 默认 bridge 网络（172.17.0.0/16，网关 172.17.0.1），
+    # 避免 compose 自建网络导致连接被拒。
+    network_mode: bridge
+    ports:
+      # 若 8084 也被占用，可改成其他端口。
+      - "8084:8080"
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=8080
+      - DATA_DIR=/data
+      - MV_DIR=/mv
+      - MV_NET_DIR=/mv-net
+      - SINGER_DIR=/singer
+      # 预置管理员密码：仅当从未设置过密码时生效（后台 /admin 首次登录用），
+      # 设置过之后改密码请到后台「修改密码」。留空则走首次设置流程。
+      - ADMIN_PASSWORD=admin888
+      # VAAPI 渲染节点路径，容器内代码会先探测该路径、不可用时自动探测
+      # /dev/dri/renderD128、renderD129、card0 等常见候选节点。
+      - VAAPI_DEVICE=/dev/dri/renderD128
+      # HLS 缓存每日清理：距上次转码完成超过该天数的缓存自动清理。
+      - HLS_CACHE_MAX_AGE_DAYS=3
+      # NVIDIA NVENC 硬件编码开关：auto（自动探测）/ on / off，默认 auto。
+      # 注意 Debian 官方 ffmpeg 不带 h264_nvenc，需使用带 nvenc 的 ffmpeg 构建。
+      - NVENC_ENABLE=auto
+      # 用 NVIDIA 显卡转码(NVENC)就取消下面两行注释，同时取消最下面
+      # runtime: nvidia 的注释：
+      # - NVIDIA_VISIBLE_DEVICES=all
+      # - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+    volumes:
+      # 应用数据（数据库/HLS缓存）与曲库都放在项目目录下，相对路径无需修改。
+      - ./data:/data
+      # 本地曲库：每挂一个目录就是一个曲库来源，后台启用后参与扫描。
+      # 例：/vol1/1000/mv/华语:/mv/huayu
+      #     /vol1/1000/mv/英文:/mv/english
+      - ./mv:/mv
+      # 网盘曲库（可选）：挂载到 /mv-net/<名称>。
+      # 例：/vol1/1000/cloud/music:/mv-net/pan
+      - ./mv-net:/mv-net
+      # 歌手头像目录（可选）：图片名=歌手名，如 周杰伦.jpg、周杰伦&林俊杰.jpg
+      - ./singer:/singer
+    # VAAPI_DEVICES_BEGIN
+    # 宿主机有 Intel/AMD 核显或独显时保留本段（硬件转码，CPU 占用低）；
+    # 无核显/独显的机器请删除本段，否则 compose 报错退出。
+    devices:
+      - /dev/dri:/dev/dri
+    # VAAPI_DEVICES_END
+    # runtime: nvidia   # 用 NVIDIA 显卡转码(NVENC)时取消注释（同时打开上面两行 NVIDIA 环境变量）

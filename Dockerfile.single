@@ -1,0 +1,43 @@
+# 单阶段镜像（飞牛系统推荐）
+#
+# 直接使用已交叉编译好的 linux/amd64 静态二进制（ktv-server-linux-amd64，
+# CGO_ENABLED=0 纯静态，任何 Linux 发行版都可运行），飞牛上构建时无需下载
+# Go 工具链，只拉 debian 基础镜像 + 安装 ffmpeg，构建快且稳定。
+#
+# 运行阶段依赖：
+#   - libva2/libva-drm2  ：VAAPI 运行时库
+#   - va-driver-all      ：自动装好 Intel(iHD/i965)、AMD/Mesa(radeonsi) 等常见
+#                          核显/独显的 VAAPI 驱动实现
+#   - vainfo             ：诊断工具
+# 没有这些库时 h264_vaapi 初始化会失败，但代码已处理"VAAPI 不可用"情形，
+# 会自动回退 libx264 软件编码，不会导致转码彻底失败。
+
+FROM debian:bookworm-slim
+
+# 国内网络无法直连 deb.debian.org（apt update 超时），换成阿里云镜像源。
+# debian:bookworm 的 apt 源在 deb822 格式的 debian.sources 中，替换域名即可。
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources
+
+RUN apt-get update && apt-get install -y \
+      ffmpeg \
+      libva2 libva-drm2 va-driver-all vainfo \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY ktv-server-linux-amd64 ./ktv-server
+COPY web ./web
+# Windows 上交叉编译的产物没有 Unix 执行位，COPY 会保留该权限，需显式添加。
+RUN chmod +x ./ktv-server
+
+ENV DATA_DIR=/data
+ENV MV_DIR=/mv
+ENV MV_NET_DIR=/mv-net
+ENV SINGER_DIR=/singer
+ENV PORT=8080
+
+EXPOSE 8080
+# /data 数据库/封面 · /mv 本地曲库 · /mv-net 网盘曲库 · /singer 歌手头像
+VOLUME ["/data", "/mv", "/mv-net", "/singer"]
+
+CMD ["./ktv-server"]
