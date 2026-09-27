@@ -5,10 +5,10 @@ services:
     container_name: jiayue-ktv
     restart: unless-stopped
     network_mode: bridge
-    # 端口已取消自定义功能，固定使用宿主机 8083 端口，容器内部始终监听
+    # 端口已取消自定义功能，固定使用宿主机 8086 端口，容器内部始终监听
     # 8080，不再需要生命周期脚本用 sed 改写。
     ports:
-      - "8083:8080"
+      - "8086:8080"
     environment:
       - TZ=Asia/Shanghai
       - PORT=8080

@@ -1,6 +1,7 @@
 # 家悦K歌 局域网点歌系统 — 飞牛系统（fnOS）部署指南
 
-Go 语言重写版服务端（对齐 1.2.0 功能），前端四端（TV 播放端 / PAD 点歌台 / 手机点歌 / 曲库管理）不变。
+> 📄 总览与所有安装方式（Windows / 通用 Linux / 各端介绍）见 **[README.md](README.md)**
+> 版本：**v1.0.1**（Go 语言重写版服务端，对齐 junyao-ktv 1.2.0 功能），前端四端（TV 播放端 / PAD 点歌台 / 手机点歌 / 曲库管理）不变。
 
 本包已含交叉编译好的 `linux/amd64` 静态二进制，飞牛（x86）上构建无需 Go 工具链。
 
@@ -65,13 +66,18 @@ sudo docker compose -f docker-compose.fnos.yml up -d --build
 
 | 页面       | 地址                        |
 | -------- | ------------------------- |
-| 主页（四个入口） | `http://飞牛IP:8084/`       |
-| TV 点歌屏   | `http://飞牛IP:8084/tv/`    |
-| PAD 点歌     | `http://飞牛IP:8084/pad/`   |
-| 手机点歌     | `http://飞牛IP:8084/m/`     |
-| 曲库管理     | `http://飞牛IP:8084/admin/` |
+| 主页（四个入口） | `http://飞牛IP:8086/`       |
+| TV 点歌屏   | `http://飞牛IP:8086/tv/`    |
+| PAD 点歌     | `http://飞牛IP:8086/pad/`   |
+| 手机点歌     | `http://飞牛IP:8086/m/`     |
+| 曲库管理     | `http://飞牛IP:8086/admin/` |
 
-首次部署后，在后台或 TV 端点「扫描曲库」，或：`curl -X POST http://飞牛IP:8084/api/scan`
+首次部署后，在后台或 TV 端点「扫描曲库」，或：`curl -X POST http://飞牛IP:8086/api/scan`
+
+### TV 播放端
+
+- **网页版**：电视/盒子浏览器打开 `http://飞牛IP:8086/tv/`（大屏待机画面、顶部滚动字幕、原/伴唱、切歌、音量、均衡器、全屏）
+- **安卓 TV 原生 App**：下载 `jiayuektv-tv-1.0.1.apk`（本仓库 Release 页）安装到安卓电视/盒子（Android 6.0+），原生全屏播放、遥控器操作；装好后在设置里填服务器地址 `飞牛IP:8086`
 
 ## 五、1.2.0 新功能说明
 
@@ -123,7 +129,7 @@ sudo docker compose -f docker-compose.fnos.yml up -d --build
 
   代码会自动探测 renderD128/renderD129/card0 等候选节点。
 
-* **换端口**：改 compose `ports: "8084:8080"` 左侧宿主机端口。
+* **换端口**：改 compose `ports: "8086:8080"` 左侧宿主机端口。
 
 * **HLS 缓存清理**：默认 3 天，改环境变量 `HLS_CACHE_MAX_AGE_DAYS`。
 

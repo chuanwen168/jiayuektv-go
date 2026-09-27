@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>家悦K歌 · 曲库管理</title>
+<style>
+:root{--bg:#07071a;--card:#10102a;--accent:#c736f7;--cyan:#36d9f7;--pink:#ff4f9b;--text:#f4f4ff;--sub:#8888aa}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:"PingFang SC","Microsoft YaHei",sans-serif;min-height:100vh}
+header{
+  position:sticky;top:0;z-index:10;padding:14px 22px;
+  background:rgba(7,7,26,.92);backdrop-filter:blur(16px);
+  border-bottom:1px solid rgba(255,255,255,.07);
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap
+}
+.logo{font-size:20px;font-weight:900;background:linear-gradient(90deg,var(--cyan),var(--accent));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.logo span{font-size:13px;color:var(--sub);font-weight:400;margin-left:6px}
+.spacer{flex:1}
+.hbtn{
+  padding:8px 16px;border-radius:10px;font-size:13px;cursor:pointer;border:none;color:#fff;
+  background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);transition:.2s
+}
+.hbtn:hover{background:rgba(199,54,247,.3);border-color:var(--accent)}
+.hbtn.primary{background:linear-gradient(135deg,var(--accent),var(--cyan));border:none;font-weight:600;color:#07071a}
+.hbtn:disabled{opacity:.4;cursor:not-allowed}
+
+main{max-width:1200px;margin:0 auto;padding:20px 24px}
+
+/* Stats */
+.stats-row{display:flex;gap:14px;margin-bottom:20px}
+.stat{flex:1;background:var(--card);border-radius:14px;padding:16px;text-align:center;border:1px solid rgba(255,255,255,.06)}
+.stat .n{font-size:30px;font-weight:800;color:var(--accent)}
+.stat .l{font-size:12px;color:var(--sub);margin-top:4px}
+
+/* Toolbar */
+.toolbar{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+.search-box{
+  flex:1;min-width:220px;display:flex;align-items:center;gap:8px;
+  background:rgba(255,255,255,.06);border-radius:12px;padding:10px 14px;
+  border:1px solid rgba(255,255,255,.08)
+}
+.search-box input{flex:1;background:transparent;border:none;outline:none;color:var(--text);font-size:14px}
+#filter-select,#lang-sel,#genre-sel{
+  background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);
+  border-radius:10px;padding:9px 12px;color:var(--text);font-size:13px;outline:none;cursor:pointer
+}
+#filter-select:focus{border-color:var(--accent)}
+select option{color:#000}
+.scope-toggle{display:flex;background:rgba(255,255,255,.05);border-radius:10px;padding:3px;gap:2px}
+.scope-btn{padding:7px 14px;border-radius:8px;font-size:13px;cursor:pointer;border:none;background:transparent;color:var(--sub)}
+.scope-btn.active{background:var(--accent);color:#fff}
+
+/* Table */
+.welcome-bar{display:flex;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;
+  background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:14px;flex-wrap:wrap}
+.welcome-bar .wl{font-size:13px;font-weight:600;color:#dcdcf2;white-space:nowrap}
+.welcome-bar input{flex:1;min-width:220px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);
+  border-radius:10px;padding:8px 12px;color:#fff;font-size:14px;outline:none}
+.welcome-bar input:focus{border-color:rgba(199,54,247,.6)}
+.welcome-bar .wl-hint{font-size:11px;color:#8a8aad;white-space:nowrap}
+.table-wrap{overflow-x:auto;border-radius:14px;border:1px solid rgba(255,255,255,.06)}
+.song-table{width:100%;border-collapse:collapse;background:var(--card)}
+.song-table th{
+  text-align:left;padding:10px 12px;font-size:12px;color:var(--sub);
+  border-bottom:1px solid rgba(255,255,255,.07);white-space:nowrap
+}
+.song-table td{padding:9px 12px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.04)}
+.song-table tr:hover td{background:rgba(255,255,255,.03)}
+.song-table .title-cell{font-weight:600}
+.count-cell{color:var(--cyan);font-size:13px;text-align:right}
+.row-check{width:16px;height:16px;cursor:pointer;accent-color:var(--accent)}
+.row-acts{display:flex;gap:6px;justify-content:flex-end}
+.act-btn{padding:4px 10px;border-radius:8px;font-size:12px;border:none;cursor:pointer}
+.act-edit{background:rgba(54,217,247,.15);color:var(--cyan)}
+.act-del{background:rgba(255,79,155,.15);color:var(--pink)}
+.act-btn:hover{opacity:.8}
+
+/* 歌手拆分 chips（合唱按 & 拆分） */
+.artist-chips{display:flex;flex-wrap:wrap;gap:4px}
+.artist-chip{
+  font-size:12px;color:var(--text);background:rgba(199,54,247,.16);
+  border:1px solid rgba(199,54,247,.3);border-radius:8px;padding:2px 8px
+}
+.tag-badge{font-size:12px;color:var(--sub);background:rgba(255,255,255,.06);border-radius:8px;padding:2px 8px}
+
+/* 语种/风格列内下拉 */
+.field-select{
+  max-width:150px;width:100%;background:rgba(255,255,255,.06);
+  border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:5px 8px;
+  color:var(--text);font-size:12px;outline:none;cursor:pointer
+}
+.field-select:focus{border-color:var(--accent)}
+.field-select-empty{color:var(--sub);border-style:dashed;background:rgba(255,79,155,.06)}
+
+/* 音轨 badge */
+.track-badge{font-size:11px;border-radius:6px;padding:2px 8px;white-space:nowrap}
+.track-dual{color:var(--cyan);background:rgba(54,217,247,.12)}
+.track-mono{color:var(--sub);background:rgba(255,255,255,.07)}
+.track-unknown{color:var(--pink);background:rgba(255,79,155,.12)}
+
+/* Pagination */
+.pagination{display:flex;gap:10px;align-items:center;justify-content:center;margin-top:16px}
+.pagination .pg-btn{padding:7px 16px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);color:var(--text);cursor:pointer;font-size:13px}
+.pagination .pg-btn:disabled{opacity:.35;cursor:not-allowed}
+.pagination .pg-info{font-size:13px;color:var(--sub)}
+
+/* Library sources */
+.lib-panel{background:var(--card);border-radius:14px;padding:18px;margin-top:20px;border:1px solid rgba(255,255,255,.06)}
+.lib-panel h3{font-size:15px;margin-bottom:4px}
+.lib-hint{font-size:12px;color:var(--sub);margin-bottom:14px}
+.lib-item{display:flex;align-items:center;justify-content:space-between;padding:12px 6px;border-bottom:1px solid rgba(255,255,255,.05)}
+.lib-item:last-child{border-bottom:none}
+.lib-name{font-size:14px;font-weight:600}
+.lib-kind{font-size:11px;color:var(--cyan);background:rgba(54,217,247,.12);border-radius:6px;padding:2px 8px;margin-left:6px}
+.lib-path{font-size:12px;color:var(--sub);margin-top:3px}
+.lib-empty{color:var(--sub);font-size:13px;padding:10px 0}
+.switch{position:relative;display:inline-block;width:44px;height:24px}
+.switch input{opacity:0;width:0;height:0}
+.slider{position:absolute;cursor:pointer;inset:0;background:rgba(255,255,255,.12);border-radius:24px;transition:.2s}
+.slider:before{content:"";position:absolute;height:18px;width:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
+.switch input:checked + .slider{background:linear-gradient(135deg,var(--accent),var(--cyan))}
+.switch input:checked + .slider:before{transform:translateX(20px)}
+.artist-avatar{width:22px;height:22px;border-radius:50%;object-fit:cover;vertical-align:-5px;margin-right:6px}
+
+/* Scan log */
+#scan-log{
+  background:var(--card);border-radius:14px;padding:16px;margin-top:20px;
+  font-size:13px;color:var(--sub);display:none;border:1px solid rgba(255,255,255,.06)
+}
+#scan-log.show{display:block}
+#scan-log pre{color:var(--cyan);margin-top:8px;font-size:12px}
+
+/* Modals */
+#modal-overlay,#batch-modal-overlay,#pw-modal-overlay{
+  position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.65);
+  display:none;align-items:center;justify-content:center
+}
+#modal-overlay.open,#batch-modal-overlay.open,#pw-modal-overlay.open{display:flex}
+#modal,#batch-modal,#pw-modal{
+  background:#12122e;border-radius:18px;padding:26px;width:460px;max-width:92vw;
+  border:1px solid rgba(255,255,255,.1);max-height:88vh;overflow-y:auto
+}
+#modal h3,#batch-modal h3,#pw-modal h3{font-size:17px;margin-bottom:18px}
+.form-row{margin-bottom:14px}
+.form-row label{display:block;font-size:12px;color:var(--sub);margin-bottom:6px}
+.form-row input{
+  width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);
+  border-radius:10px;padding:10px 14px;color:var(--text);font-size:14px;outline:none
+}
+.form-row input:focus{border-color:var(--accent)}
+.modal-btns{display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
+
+/* Batch modal */
+.batch-field{background:rgba(255,255,255,.04);border-radius:12px;padding:14px;margin-bottom:12px}
+.batch-field>label{display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:10px;cursor:pointer}
+.batch-field>label input{width:16px;height:16px;accent-color:var(--accent)}
+.batch-field select{width:100%;margin-bottom:10px}
+.preset-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.preset-chip{
+  font-size:12px;padding:4px 10px;border-radius:8px;cursor:pointer;
+  background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);color:var(--text);transition:.15s
+}
+.preset-chip:hover{background:rgba(199,54,247,.25);border-color:var(--accent)}
+.preset-chip.del{opacity:.5}
+.preset-add-row{display:flex;gap:8px}
+.preset-add-row input{
+  flex:1;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);
+  border-radius:10px;padding:8px 12px;color:var(--text);font-size:13px;outline:none
+}
+.preset-add-row input:focus{border-color:var(--accent)}
+
+/* Toast */
+#toast{
+  position:fixed;top:20px;left:50%;transform:translateX(-50%) translateY(-70px);
+  background:rgba(20,20,50,.95);border:1px solid rgba(199,54,247,.4);
+  padding:10px 22px;border-radius:12px;font-size:14px;z-index:99;
+  backdrop-filter:blur(12px);transition:transform .28s
+}
+#toast.show{transform:translateX(-50%) translateY(0)}
+.empty{text-align:center;color:#444;padding:40px 0;font-size:14px}
+
+/* Login gate */
+#login-overlay{
+  position:fixed;inset:0;z-index:200;background:var(--bg);
+  display:flex;align-items:center;justify-content:center
+}
+#login-overlay.hidden{display:none}
+.auth-box{
+  background:var(--card);border:1px solid rgba(255,255,255,.08);border-radius:18px;
+  padding:36px 32px;width:340px;max-width:88vw;text-align:center
+}
+.auth-box .lg-title{font-size:20px;font-weight:800;margin-bottom:6px}
+.auth-box .lg-sub{color:var(--sub);font-size:13px;margin-bottom:22px}
+.auth-box input{
+  width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);
+  border-radius:10px;padding:12px 14px;color:var(--text);font-size:14px;outline:none;margin-bottom:14px
+}
+.auth-box input:focus{border-color:var(--accent)}
+.auth-box button{
+  width:100%;padding:12px;border-radius:10px;border:none;font-weight:600;cursor:pointer;
+  background:linear-gradient(135deg,var(--accent),var(--cyan));color:#07071a;font-size:14px
+}
+#login-err,#setup-err{color:var(--pink);font-size:12px;margin:-6px 0 12px;min-height:14px}
+.hidden{display:none !important}
+</style>
+</head>
+<body>
+<div id="login-overlay">
+  <div id="login-box" class="auth-box hidden">
+    <div class="lg-title">🔒 曲库管理</div>
+    <div class="lg-sub">请输入管理员密码登录</div>
+    <input id="login-password" type="password" placeholder="管理员密码" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+    <div id="login-err"></div>
+    <button onclick="doLogin()">登录</button>
+  </div>
+  <div id="setup-box" class="auth-box hidden">
+    <div class="lg-title">👋 欢迎使用曲库管理</div>
+    <div class="lg-sub">首次使用，请先设置一个管理员密码</div>
+    <input id="setup-password" type="password" placeholder="设置密码（至少 4 位）" autocomplete="new-password" onkeydown="if(event.key==='Enter')document.getElementById('setup-password2').focus()">
+    <input id="setup-password2" type="password" placeholder="再次输入密码" autocomplete="new-password" onkeydown="if(event.key==='Enter')doSetup()">
+    <div id="setup-err"></div>
+    <button onclick="doSetup()">设置密码并登录</button>
+  </div>
+</div>
+
+<header>
+  <div class="logo">家悦K歌 <span>曲库管理</span></div>
+  <div class="spacer"></div>
+  <button class="hbtn" onclick="window.open('/tv','_blank')">📺 TV端</button>
+  <button class="hbtn" onclick="window.open('/pad','_blank')">📟 PAD点歌</button>
+  <button class="hbtn" onclick="window.open('/m','_blank')">📱 手机端</button>
+  <button class="hbtn primary" onclick="doScan()">🔄 扫描曲库</button>
+  <button class="hbtn" onclick="openPwModal()">🔑 修改密码</button>
+  <button class="hbtn" onclick="doLogout()">🚪 退出登录</button>
+</header>
+
+<main>
+  <div class="stats-row">
+    <div class="stat"><div class="n" id="s-total">—</div><div class="l">总曲目</div></div>
+    <div class="stat"><div class="n" id="s-queue">—</div><div class="l">队列中</div></div>
+    <div class="stat"><div class="n" id="s-plays">—</div><div class="l">累计播放</div></div>
+  </div>
+
+  <div class="welcome-bar">
+    <span class="wl">📢 TV 滚动欢迎语</span>
+    <input id="welcome-input" maxlength="60" placeholder="家悦K歌，唱响每一刻">
+    <button class="hbtn primary" onclick="saveWelcome()">保存</button>
+    <span class="wl-hint">TV 顶部滚动条先播歌曲信息，再接这条欢迎语</span>
+  </div>
+
+  <div class="toolbar">
+    <div class="search-box">
+      <span>🔍</span>
+      <input id="search" placeholder="搜索歌名 / 歌手…" oninput="doSearch(this.value)">
+    </div>
+    <select id="filter-select" onchange="doFilterChange(this.value)">
+      <option value="">全部歌曲</option>
+      <option value="any">信息不完整（缺歌手/语种/风格）</option>
+      <option value="artist">歌手未知</option>
+      <option value="language">缺语种</option>
+      <option value="genre">缺风格</option>
+      <option value="track">未探测成功/单音轨</option>
+    </select>
+    <div class="scope-toggle" id="scope-toggle">
+      <button class="scope-btn active" data-scope="" onclick="doScopeChange('')">全部</button>
+      <button class="scope-btn" data-scope="local" onclick="doScopeChange('local')">本地</button>
+      <button class="scope-btn" data-scope="network" onclick="doScopeChange('network')">网盘</button>
+    </div>
+    <button class="hbtn" id="batch-open-btn" onclick="openBatchModal()" disabled>🏷️ 批量设置语种/风格</button>
+    <button class="hbtn" id="sel-clear-btn" onclick="clearSelection()" disabled>清除选择(<span id="sel-count">0</span>)</button>
+  </div>
+
+  <div class="table-wrap">
+    <table class="song-table">
+      <thead>
+        <tr>
+          <th style="width:32px"><input type="checkbox" id="select-all-page" onchange="toggleSelectAllPage(this.checked)"></th>
+          <th>#</th><th>歌名</th><th>歌手</th>
+          <th style="width:140px">语种</th><th style="width:140px">风格</th>
+          <th>音轨</th><th style="text-align:right">播放</th><th style="text-align:right">操作</th>
+        </tr>
+      </thead>
+      <tbody id="song-tbody"></tbody>
+    </table>
+  </div>
+  <div class="empty" id="empty-tip" style="display:none">暂无歌曲，请先扫描曲库</div>
+
+  <div class="pagination" id="pagination" style="display:none">
+    <button class="pg-btn" id="pg-prev" onclick="goPage(currentPage-1)">← 上一页</button>
+    <span class="pg-info">第 <span id="pg-cur">1</span> / <span id="pg-total">1</span> 页 · 共 <span id="pg-count">0</span> 首</span>
+    <button class="pg-btn" id="pg-next" onclick="goPage(currentPage+1)">下一页 →</button>
+  </div>
+
+  <div class="lib-panel">
+    <h3>曲库来源</h3>
+    <div class="lib-hint">挂载到 /mv/、/mv-net/ 的曲库目录需在此启用后才会参与扫描（本地根目录 /mv 直接放文件时默认启用）</div>
+    <div id="lib-list"></div>
+  </div>
+
+  <div id="scan-log">
+    <b>扫描结果</b>
+    <pre id="scan-pre"></pre>
+  </div>
+</main>
+
+<!-- Edit modal -->
+<div id="modal-overlay" onclick="closeModal()">
+  <div id="modal" onclick="event.stopPropagation()">
+    <h3>✏️ 编辑歌曲信息</h3>
+    <div class="form-row"><label>歌名</label><input id="edit-title" placeholder="歌名"></div>
+    <div class="form-row"><label>歌手</label><input id="edit-artist" placeholder="歌手（多个用 & 分隔）"></div>
+    <div class="form-row"><label>语种</label><input id="edit-language" placeholder="如：国语 / 粤语 / 英语（可留空）"></div>
+    <div class="form-row"><label>风格</label><input id="edit-genre" placeholder="如：流行 / 摇滚 / 民谣（可留空）"></div>
+    <input type="hidden" id="edit-id">
+    <div class="modal-btns">
+      <button class="hbtn" onclick="closeModal()">取消</button>
+      <button class="hbtn primary" onclick="saveEdit()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Batch modal -->
+<div id="batch-modal-overlay" onclick="closeBatchModal()">
+  <div id="batch-modal" onclick="event.stopPropagation()">
+    <h3>🏷️ 批量设置语种 / 风格（已选 <span id="batch-count">0</span> 首）</h3>
+    <div class="batch-field">
+      <label><input type="checkbox" id="batch-set-lang" onchange="document.getElementById('batch-lang-select').disabled=!this.checked"> 设置语种</label>
+      <select id="batch-lang-select" disabled></select>
+      <div class="preset-chips" id="lang-preset-chips"></div>
+      <div class="preset-add-row">
+        <input id="lang-preset-input" placeholder="自定义语种预设，如：闽南语" onkeydown="if(event.key==='Enter')addPreset('language')">
+        <button class="hbtn" onclick="addPreset('language')">添加预设</button>
+      </div>
+    </div>
+    <div class="batch-field">
+      <label><input type="checkbox" id="batch-set-genre" onchange="document.getElementById('batch-genre-select').disabled=!this.checked"> 设置风格</label>
+      <select id="batch-genre-select" disabled></select>
+      <div class="preset-chips" id="genre-preset-chips"></div>
+      <div class="preset-add-row">
+        <input id="genre-preset-input" placeholder="自定义风格预设，如：R&B" onkeydown="if(event.key==='Enter')addPreset('genre')">
+        <button class="hbtn" onclick="addPreset('genre')">添加预设</button>
+      </div>
+    </div>
+    <div class="modal-btns">
+      <button class="hbtn" onclick="closeBatchModal()">取消</button>
+      <button class="hbtn primary" onclick="applyBatch()">批量应用</button>
+    </div>
+  </div>
+</div>
+
+<!-- Change password modal -->
+<div id="pw-modal-overlay" onclick="closePwModal()">
+  <div id="pw-modal" onclick="event.stopPropagation()">
+    <h3>🔑 修改管理员密码</h3>
+    <div class="form-row"><label>当前密码</label><input id="pw-old" type="password" autocomplete="current-password"></div>
+    <div class="form-row"><label>新密码</label><input id="pw-new" type="password" autocomplete="new-password" placeholder="至少 4 位"></div>
+    <div class="form-row"><label>确认新密码</label><input id="pw-new2" type="password" autocomplete="new-password"></div>
+    <div id="pw-err" style="color:var(--pink);font-size:12px;min-height:14px;margin-bottom:8px"></div>
+    <div class="modal-btns">
+      <button class="hbtn" onclick="closePwModal()">取消</button>
+      <button class="hbtn primary" onclick="submitChangePassword()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const PAGE_SIZE = 50;
+let allSongs = [];
+let currentPage = 1;
+let totalPages = 1;
+let totalCount = 0;
+let currentFilter = '';
+let currentScope = '';
+let presets = { languages: [], genres: [] };
+let selectedIds = new Set();
+let searchTimer;
+
+// ---------- 登录状态 ----------
+async function checkSession(){
+  try{
+    const r = await fetch('/api/admin/session');
+    const d = await r.json();
+    if(d.authed){ showApp(); }
+    else if(!d.passwordSet){ showSetup(); }
+    else{ showLogin(); }
+  }catch(e){ showLogin(); }
+}
+function showLogin(){
+  document.getElementById('login-overlay').classList.remove('hidden');
+  document.getElementById('setup-box').classList.add('hidden');
+  document.getElementById('login-box').classList.remove('hidden');
+}
+function showSetup(){
+  document.getElementById('login-overlay').classList.remove('hidden');
+  document.getElementById('login-box').classList.add('hidden');
+  document.getElementById('setup-box').classList.remove('hidden');
+}
+function showApp(){
+  document.getElementById('login-overlay').classList.add('hidden');
+  loadAll();
+}
+async function doSetup(){
+  const p1 = document.getElementById('setup-password').value;
+  const p2 = document.getElementById('setup-password2').value;
+  const errEl = document.getElementById('setup-err');
+  errEl.textContent = '';
+  if(!p1 || p1.length < 4){ errEl.textContent = '密码至少 4 位'; return; }
+  if(p1 !== p2){ errEl.textContent = '两次输入的密码不一致'; return; }
+  try{
+    const r = await fetch('/api/admin/setup', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password:p1}) });
+    if(r.ok){ showApp(); }
+    else{
+      const d = await r.json().catch(()=>({}));
+      if(r.status === 409){ showLogin(); document.getElementById('login-err').textContent = d.error || '密码已被设置，请登录'; }
+      else{ errEl.textContent = d.error || '设置失败，请重试'; }
+    }
+  }catch(e){ errEl.textContent = '请求失败，请检查网络'; }
+}
+async function doLogin(){
+  const input = document.getElementById('login-password');
+  const errEl = document.getElementById('login-err');
+  errEl.textContent = '';
+  if(!input.value){ errEl.textContent = '请输入密码'; return; }
+  try{
+    const r = await fetch('/api/admin/login', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password:input.value}) });
+    if(r.ok){ input.value=''; showApp(); }
+    else{ const d = await r.json().catch(()=>({})); errEl.textContent = d.error || '密码错误'; }
+  }catch(e){ errEl.textContent = '登录请求失败，请检查网络'; }
+}
+
+function openPwModal(){
+  ['pw-old','pw-new','pw-new2'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('pw-err').textContent = '';
+  document.getElementById('pw-modal-overlay').classList.add('open');
+}
+function closePwModal(){ document.getElementById('pw-modal-overlay').classList.remove('open'); }
+async function submitChangePassword(){
+  const oldPassword = document.getElementById('pw-old').value;
+  const newPassword = document.getElementById('pw-new').value;
+  const errEl = document.getElementById('pw-err');
+  errEl.textContent = '';
+  if(!oldPassword){ errEl.textContent = '请输入当前密码'; return; }
+  if(!newPassword || newPassword.length < 4){ errEl.textContent = '新密码至少 4 位'; return; }
+  if(newPassword !== document.getElementById('pw-new2').value){ errEl.textContent = '两次输入的新密码不一致'; return; }
+  try{
+    const r = await fetch('/api/admin/change-password', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({oldPassword,newPassword}) });
+    if(r.ok){ closePwModal(); toast('密码已修改 ✓'); }
+    else{ const d = await r.json().catch(()=>({})); errEl.textContent = d.error || '修改失败，请重试'; }
+  }catch(e){ errEl.textContent = '请求失败，请检查网络'; }
+}
+async function doLogout(){ try{ await fetch('/api/admin/logout',{method:'POST'}); }catch(e){} showLogin(); }
+
+// ---------- 列表加载 ----------
+async function loadAll(){
+  const stats = await fetch('/api/stats').then(r=>r.json());
+  document.getElementById('s-total').textContent = stats.songCount;
+  document.getElementById('s-queue').textContent = stats.queueCount;
+  document.getElementById('s-plays').textContent = stats.totalPlays ?? '—';
+  await Promise.all([loadPresets(), loadLibraries(), loadWelcome()]);
+  await refreshList();
+}
+async function loadWelcome(){
+  try{
+    const d = await fetch('/api/welcome').then(r=>r.json());
+    if(d && d.welcome) document.getElementById('welcome-input').value = d.welcome;
+  }catch(e){}
+}
+async function saveWelcome(){
+  const v = document.getElementById('welcome-input').value.trim();
+  try{
+    const r = await fetch('/api/admin/welcome', {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({welcome:v})});
+    if(r.ok){ toast('欢迎语已保存 ✓'); }
+    else{ toast('保存失败'); }
+  }catch(e){ toast('保存失败'); }
+}
+function currentSongsQuery(){
+  const params = new URLSearchParams();
+  const q = document.getElementById('search').value.trim();
+  if(q) params.set('q', q);
+  if(currentFilter) params.set('incomplete', currentFilter);
+  if(currentScope) params.set('scope', currentScope);
+  params.set('page', currentPage);
+  params.set('pageSize', PAGE_SIZE);
+  return `/api/songs?${params.toString()}`;
+}
+async function refreshList(){
+  const res = await fetch(currentSongsQuery());
+  if(res.status === 401){ showLogin(); return; }
+  const data = await res.json();
+  allSongs = data.items || [];
+  totalCount = data.total || 0;
+  totalPages = data.totalPages || 1;
+  currentPage = data.page || 1;
+  render(allSongs);
+  renderPagination();
+}
+function renderPagination(){
+  const box = document.getElementById('pagination');
+  box.style.display = totalCount ? 'flex' : 'none';
+  document.getElementById('pg-cur').textContent = currentPage;
+  document.getElementById('pg-total').textContent = totalPages;
+  document.getElementById('pg-count').textContent = totalCount;
+  document.getElementById('pg-prev').disabled = currentPage <= 1;
+  document.getElementById('pg-next').disabled = currentPage >= totalPages;
+}
+function goPage(p){
+  if(p < 1 || p > totalPages || p === currentPage) return;
+  currentPage = p;
+  refreshList();
+}
+function doFilterChange(v){ currentFilter = v; currentPage = 1; refreshList(); }
+function doScopeChange(v){ currentScope = v; currentPage = 1; document.querySelectorAll('#scope-toggle .scope-btn').forEach(b=>b.classList.toggle('active', b.dataset.scope===v)); refreshList(); }
+function doSearch(q){
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(()=>{ currentPage = 1; refreshList(); }, 250);
+}
+
+// ---------- 渲染 ----------
+function artistChipsHtml(artist){
+  if(!artist){ return '<span class="tag-badge">未知歌手</span>'; }
+  const names = String(artist).split('&').map(s=>s.trim()).filter(Boolean);
+  if(!names.length) return '<span class="tag-badge">未知歌手</span>';
+  return `<div class="artist-chips">${names.map(n=>`<span class="artist-chip">${esc(n)}</span>`).join('')}</div>`;
+}
+function fieldSelectHtml(song, field){
+  const value = String(song[field] || '').trim();
+  const presetList = (field === 'language' ? presets.languages : presets.genres) || [];
+  const options = presetList.slice();
+  if(value && !options.includes(value)) options.push(value);
+  const optHtml = `<option value=""${value ? '' : ' selected'}>${value ? '' : '点击选择'}</option>` +
+    options.map(v => `<option value="${esc(v)}"${v === value ? ' selected' : ''}>${esc(v)}</option>`).join('');
+  const emptyCls = value ? '' : ' field-select-empty';
+  return `<select class="field-select${emptyCls}" onchange="updateField(${song.id},'${field}',this.value)">${optHtml}</select>`;
+}
+function trackIconHtml(song){
+  const t = song.audio_tracks;
+  if(t === null || t === undefined) return '<span class="track-badge track-unknown" title="音轨探测失败，下次扫描自动重试">❓ 未知</span>';
+  if(t >= 2) return '<span class="track-badge track-dual" title="独立原唱/伴唱双音轨">🎚️ 双音轨</span>';
+  return '<span class="track-badge track-mono" title="单音轨，原/伴唱靠左右声道">🔊 单轨双声道</span>';
+}
+function render(list){
+  const tbody = document.getElementById('song-tbody');
+  const empty = document.getElementById('empty-tip');
+  tbody.innerHTML = '';
+  empty.style.display = list.length ? 'none' : 'block';
+  empty.textContent = (currentFilter || currentScope || document.getElementById('search').value.trim()) ? '没有符合条件的歌曲' : '暂无歌曲，请先扫描曲库';
+  const startIndex = (currentPage - 1) * PAGE_SIZE;
+  list.forEach((s,i)=>{
+    const tr = document.createElement('tr');
+    tr.dataset.id = s.id;
+    tr.innerHTML = `
+      <td><input type="checkbox" class="row-check" ${selectedIds.has(s.id)?'checked':''} onchange="toggleSelect(${s.id},this.checked)"></td>
+      <td style="color:var(--sub);font-size:12px">${startIndex+i+1}</td>
+      <td class="title-cell">${esc(s.title)}</td>
+      <td>${artistChipsHtml(s.artist)}</td>
+      <td>${fieldSelectHtml(s,'language')}</td>
+      <td>${fieldSelectHtml(s,'genre')}</td>
+      <td>${trackIconHtml(s)}</td>
+      <td class="count-cell">${s.play_count}</td>
+      <td>
+        <div class="row-acts">
+          <button class="act-btn act-edit" onclick="openEdit(${s.id})">编辑</button>
+          <button class="act-btn act-del" onclick="delSong(${s.id},this)">删除</button>
+        </div>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+  updateSelectionUI();
+}
+async function updateField(id, field, value){
+  const song = allSongs.find(x=>x.id===id);
+  if(!song) return;
+  const body = {
+    title: song.title || '',
+    artist: song.artist || '',
+    language: field === 'language' ? value : (song.language || ''),
+    genre: field === 'genre' ? value : (song.genre || ''),
+  };
+  try{
+    const res = await fetch(`/api/songs/${id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+    if(res.status === 401){ showLogin(); return; }
+    if(!res.ok){ toast('保存失败，请重试'); return; }
+    song[field] = value;
+    render(allSongs);
+    toast('已保存 ✓');
+  }catch(e){ toast('请求失败，请检查网络'); }
+}
+function openEdit(id){
+  const s = allSongs.find(x=>x.id===id);
+  if(!s) return;
+  document.getElementById('edit-id').value = id;
+  document.getElementById('edit-title').value = s.title || '';
+  document.getElementById('edit-artist').value = s.artist || '';
+  document.getElementById('edit-language').value = s.language || '';
+  document.getElementById('edit-genre').value = s.genre || '';
+  document.getElementById('modal-overlay').classList.add('open');
+}
+function closeModal(){ document.getElementById('modal-overlay').classList.remove('open'); }
+async function saveEdit(){
+  const id = document.getElementById('edit-id').value;
+  const title = document.getElementById('edit-title').value.trim();
+  const artist = document.getElementById('edit-artist').value.trim();
+  const language = document.getElementById('edit-language').value.trim();
+  const genre = document.getElementById('edit-genre').value.trim();
+  if(!title){ toast('歌名不能为空'); return; }
+  const res = await fetch(`/api/songs/${id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title,artist,language,genre}) });
+  if(res.status === 401){ closeModal(); showLogin(); return; }
+  closeModal();
+  const s = allSongs.find(x=>x.id==id);
+  if(s){ s.title=title; s.artist=artist; s.language=language; s.genre=genre; }
+  render(allSongs);
+  toast('已保存 ✓');
+}
+async function delSong(id, btn){
+  if(!confirm('确认从曲库移除这首歌？（文件本身不会被删除）')) return;
+  const res = await fetch(`/api/songs/${id}`, {method:'DELETE'});
+  if(res.status===401){ showLogin(); return; }
+  selectedIds.delete(id);
+  toast('已移除 ✓');
+  refreshList();
+}
+
+// ---------- 多选 / 批量 ----------
+function toggleSelect(id, checked){ if(checked) selectedIds.add(id); else selectedIds.delete(id); updateSelectionUI(); }
+function toggleSelectAllPage(checked){ allSongs.forEach(s=>{ if(checked) selectedIds.add(s.id); else selectedIds.delete(s.id); }); render(allSongs); }
+function clearSelection(){ selectedIds.clear(); render(allSongs); }
+function updateSelectionUI(){
+  const count = selectedIds.size;
+  document.getElementById('sel-count').textContent = count;
+  document.getElementById('sel-clear-btn').disabled = count === 0;
+  document.getElementById('batch-open-btn').disabled = count === 0;
+  const pageIds = allSongs.map(s=>s.id);
+  const allChecked = pageIds.length > 0 && pageIds.every(id => selectedIds.has(id));
+  document.getElementById('select-all-page').checked = allChecked;
+}
+function openBatchModal(){
+  if(!selectedIds.size){ toast('请先在表格里勾选要设置的歌曲'); return; }
+  document.getElementById('batch-count').textContent = selectedIds.size;
+  document.getElementById('batch-set-lang').checked = false;
+  document.getElementById('batch-set-genre').checked = false;
+  document.getElementById('batch-lang-select').disabled = true;
+  document.getElementById('batch-genre-select').disabled = true;
+  renderPresetChips();
+  document.getElementById('batch-modal-overlay').classList.add('open');
+}
+function closeBatchModal(){ document.getElementById('batch-modal-overlay').classList.remove('open'); }
+async function applyBatch(){
+  const setLanguage = document.getElementById('batch-set-lang').checked;
+  const setGenre = document.getElementById('batch-set-genre').checked;
+  if(!setLanguage && !setGenre){ toast('请至少勾选"设置语种"或"设置风格"其中一项'); return; }
+  const language = document.getElementById('batch-lang-select').value;
+  const genre = document.getElementById('batch-genre-select').value;
+  try{
+    const res = await fetch('/api/songs/batch', {
+      method: 'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ ids: Array.from(selectedIds), setLanguage, language, setGenre, genre }),
+    });
+    if(res.status === 401){ showLogin(); return; }
+    if(!res.ok){ toast('批量设置失败'); return; }
+    selectedIds.clear();
+    closeBatchModal();
+    toast('批量设置完成 ✓');
+    refreshList();
+  }catch(e){ toast('请求失败，请检查网络'); }
+}
+
+// ---------- 语种/风格预设 ----------
+async function loadPresets(){
+  try{
+    const r = await fetch('/api/admin/presets');
+    if(r.status === 401){ return; }
+    const d = await r.json();
+    presets = { languages: d.languages || [], genres: d.genres || [] };
+    fillBatchSelect('batch-lang-select', presets.languages);
+    fillBatchSelect('batch-genre-select', presets.genres);
+  }catch(e){}
+}
+function fillBatchSelect(selectId, list){
+  const sel = document.getElementById(selectId);
+  sel.innerHTML = '<option value="">（清空该字段）</option>' + list.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');
+}
+function renderPresetChips(){
+  const build = (list, type) => list.map(v=>
+    `<span class="preset-chip" onclick="pickPreset('${type}','${esc(v)}')">${esc(v)} <span class="del" onclick="event.stopPropagation();deletePreset('${type}','${esc(v)}')">✕</span></span>`).join('');
+  document.getElementById('lang-preset-chips').innerHTML = build(presets.languages || [], 'language');
+  document.getElementById('genre-preset-chips').innerHTML = build(presets.genres || [], 'genre');
+}
+function pickPreset(type, value){
+  const selId = type === 'language' ? 'batch-lang-select' : 'batch-genre-select';
+  const sel = document.getElementById(selId);
+  sel.value = value;
+  sel.disabled = false;
+  document.getElementById(type === 'language' ? 'batch-set-lang' : 'batch-set-genre').checked = true;
+}
+async function addPreset(type){
+  const input = document.getElementById(type === 'language' ? 'lang-preset-input' : 'genre-preset-input');
+  const value = input.value.trim();
+  if(!value) return;
+  try{
+    const r = await fetch('/api/admin/presets', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({type, value}) });
+    if(r.status === 401){ showLogin(); return; }
+    if(!r.ok){ toast('添加预设失败'); return; }
+    input.value = '';
+    await loadPresets();
+    renderPresetChips();
+    toast('预设已添加 ✓');
+  }catch(e){ toast('请求失败，请检查网络'); }
+}
+async function deletePreset(type, value){
+  if(!confirm(`确认删除预设「${value}」？已用它的歌曲不会被清空。`)) return;
+  try{
+    await fetch(`/api/admin/presets?type=${encodeURIComponent(type)}&value=${encodeURIComponent(value)}`, { method:'DELETE' });
+    await loadPresets();
+    renderPresetChips();
+    toast('预设已删除 ✓');
+  }catch(e){ toast('请求失败，请检查网络'); }
+}
+
+// ---------- 扫描 / 曲库来源 ----------
+async function doScan(){
+  const log = document.getElementById('scan-log');
+  const pre = document.getElementById('scan-pre');
+  log.classList.add('show');
+  pre.textContent = '扫描中…';
+  const res = await fetch('/api/scan',{method:'POST'});
+  const d = await res.json();
+  pre.textContent = `完成！文件总数：${d.total}  新增：${d.added}  移除：${d.removed}`;
+  toast(`扫描完成，共 ${d.total} 首，新增 ${d.added} 首`);
+  loadAll();
+}
+async function loadLibraries(){
+  const res = await fetch('/api/library-sources');
+  if(res.status===401){ return; }
+  const list = await res.json();
+  const box = document.getElementById('lib-list');
+  if(!box) return;
+  box.innerHTML = list.length ? '' : '<div class="lib-empty">未发现曲库来源。把曲库挂载到 /mv/&lt;名称&gt; 或 /mv-net/&lt;名称&gt; 后刷新本页。</div>';
+  list.forEach(src=>{
+    const item = document.createElement('div');
+    item.className = 'lib-item';
+    item.innerHTML = `
+      <div class="lib-info">
+        <div class="lib-name">${esc(src.label)} <span class="lib-kind">${src.kind==='net'?'网盘':'本地'}</span></div>
+        <div class="lib-path">${esc(src.root)}</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" data-name="${esc(src.name)}" ${src.enabled?'checked':''} onchange="toggleLibrary(this)">
+        <span class="slider"></span>
+      </label>`;
+    box.appendChild(item);
+  });
+}
+async function toggleLibrary(el){
+  const enabled = el.checked;
+  const name = el.dataset.name;
+  const res = await fetch(`/api/library-sources/${encodeURIComponent(name)}`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled}) });
+  if(res.status===401){ showLogin(); return; }
+  toast(enabled?'已启用 ✓':'已停用');
+  loadLibraries();
+}
+
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 1800);
+}
+function esc(s){ return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+checkSession();
+</script>
+</body>
+</html>

@@ -1,4 +1,15 @@
-# 飞牛系统（fnOS / x86）部署配置 — 对齐 1.2.0 功能
+# 家悦K歌 · ARM 设备（Docker）部署配置 — linux/arm64
+#
+# 适用：飞牛(fnOS) ARM 版、树莓派、瑞芯微/晶晨等 ARM64 单板 NAS。
+# 用法：
+#   1) 解压本包到设备任意目录（推荐 /vol1/1000/docker/ktvhome 或 /home/ktvhome）
+#   2) SSH 进入项目目录执行：
+#        docker compose -f docker-compose.arm.yml up -d --build
+#   3) 浏览器访问 http://设备IP:8086
+#
+# 注意：绝大多数 ARM 设备没有核显（无 /dev/dri），默认建议删除 devices 段，
+#       程序自动回退软件编码(libx264)。若你的 ARM 设备确有 /dev/dri 可保留。
+
 #
 # 使用方法：
 #   1) 把本项目放到飞牛的任意目录（推荐 /vol1/1000/docker/ktvhome）
@@ -23,7 +34,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.single
-    image: jiayue-ktv-go:1.0.1
+    image: jiayue-ktv-go-arm64:1.0.1
     container_name: jiayue-ktv-go
     restart: unless-stopped
     # 使用 Docker 默认 bridge 网络（172.17.0.0/16，网关 172.17.0.1），

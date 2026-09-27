@@ -1,0 +1,10 @@
+﻿data/
+mv/
+mv-net/
+singer/
+pkg/
+build/
+web-min/
+test_hls/
+*.log
+*.zip

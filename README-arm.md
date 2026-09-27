@@ -1,0 +1,45 @@
+# 家悦K歌 · ARM 设备（Docker）部署包
+
+适用于 **linux/arm64** 设备：飞牛(fnOS) ARM 版、树莓派 4/5、瑞芯微 RK3588 等 ARM64 单板 NAS/盒子。
+
+本包已含交叉编译好的 `linux/arm64` 静态二进制，设备上构建**无需 Go 工具链**，Docker 自动拉取 arm64 基础镜像。
+
+## 快速开始
+
+```bash
+# 1. 解压到设备（推荐 /vol1/1000/docker/ktvhome 或 /home/ktvhome）
+
+# 2. 建目录
+cd /vol1/1000/docker/ktvhome
+mkdir -p data mv mv-net singer
+
+# 3. 构建并启动（arm 专用 compose）
+sudo docker compose -f docker-compose.arm.yml up -d --build
+
+# 4. 看日志确认启动
+sudo docker logs -f jiayue-ktv-go-arm64
+```
+
+> ⚠️ **绝大多数 ARM 设备没有核显**（没有 `/dev/dri`）：先编辑 `docker-compose.arm.yml`，把 `devices:` 段落删掉再启动，程序自动回退软件编码（CPU 占用会比 x86+核显高，正常）。若你的设备确有 `/dev/dri`（如部分 RK3588 开发板），保留即可。
+
+## 使用
+
+浏览器访问 **http://设备IP:8086**
+
+| 页面 | 地址 |
+| --- | --- |
+| 主页 | `http://设备IP:8086/` |
+| TV 播放端 | `http://设备IP:8086/tv/` |
+| PAD 点歌台 | `http://设备IP:8086/pad/` |
+| 手机点歌 | `http://设备IP:8086/m/` |
+| 曲库管理 | `http://设备IP:8086/admin/`（默认密码 `admin888`，请修改） |
+
+## 曲库
+
+- 本地歌曲放 `mv/`（每子文件夹一个曲库，如 `mv/华语`）
+- 网盘歌曲放 `mv-net/`
+- 歌手头像放 `singer/`（`歌手名.jpg`）
+- 新曲库需进后台「曲库管理 → 曲库来源」启用
+- 首次使用：后台 → 🔄 扫描曲库
+
+> 版本：家悦K歌 1.0.1（Go 版）。本包前端为源码（未混淆）。歌曲版权归原版权方所有。
