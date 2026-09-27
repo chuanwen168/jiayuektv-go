@@ -267,7 +267,7 @@ sudo docker compose -f docker-compose.fnos.yml up -d --build
 - 部署：Docker（`Dockerfile` 多阶段 / `Dockerfile.single` 单阶段含预编译二进制），飞牛详见 `README-fnos.md`
 
 ## 九、特别鸣谢
-近水楼，前端手机点歌页面，借鉴了该up主ui设计，后端采用go语言自主编写。
+清风渡客，前端手机点歌页面，借鉴了该up主ui设计，后端采用go语言自主编写。
 
 原项目地址https://github.com/ma303973022/junyao-ktv/
 
