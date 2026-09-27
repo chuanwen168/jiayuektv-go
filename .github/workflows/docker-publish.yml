@@ -1,0 +1,58 @@
+name: Docker 镜像构建推送 (GHCR)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '镜像版本标签（如 1.0.1）'
+        required: true
+        default: '1.0.1'
+  push:
+    tags: ['v*']
+
+env:
+  IMG: ghcr.io/chuanwen168/jiayuektv-go
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设定版本号
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ver=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ver=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "版本: ${{ steps.ver.outputs.ver }}"
+
+      - name: 安装 QEMU（多架构模拟）
+        uses: docker/setup-qemu-action@v3
+
+      - name: 安装 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMG }}:${{ steps.ver.outputs.ver }}
+            ${{ env.IMG }}:latest
