@@ -35,6 +35,7 @@
 | 一台常开的设备 | **方案 A：Windows 电脑**（最简单，适合先体验）；**方案 B：飞牛 NAS / 任何 Linux 服务器**（推荐长期用） |
 | 歌曲文件 | **MP4 / MKV** 都行，编码 H.264 / H.265 / AV1 都支持（H.265/AV1 会自动转码） |
 | 手机 / 平板 / 电视 | 和服务器在**同一个 WiFi / 局域网**下即可 |
+| 安装包 | 从 **[Release 下载页](https://github.com/chuanwen168/jiayuektv-go/releases)** 下载：Windows 选 ktvhome-windows.zip；飞牛(x86) 选 ktvhome-linux-amd64.zip |
 
 > 💡 老玩家提示：歌曲命名越规范越好用：
 > ```
@@ -47,7 +48,7 @@
 
 ## 三、方案 A：Windows 电脑上跑（最快体验）
 
-1. 下载本项目，解压到任意目录（如 `D:\jiayuektv`）
+1. 到 **[Release 下载页](https://github.com/chuanwen168/jiayuektv-go/releases)** 下载 ktvhome-windows.zip，解压到任意目录（如 D:\jiayuektv）
 2. 在解压目录里新建 `mv` 文件夹，把你的歌曲文件放进去（也可以建子文件夹分类）
    ```
    D:\jiayuektv\mv\中文歌\...
@@ -70,7 +71,7 @@
 
 > 🐟 **飞牛（fnOS，x86）用户请以 [README-fnos.md](README-fnos.md) 为准**——飞牛专属的完整部署/升级/故障排查指南（含目录挂载、核显直通、端口说明）。本段为通用 Linux 步骤，两者按需取用。
 
-### 第 1 步：到 Release 页面下载对应版本项目 zip 包，把项目包上传到 NAS
+### 第 1 步：到 [Release 下载页](https://github.com/chuanwen168/jiayuektv-go/releases) 下载对应版本项目 zip 包（x86 飞牛选 ktvhome-linux-amd64.zip），把项目包上传到 NAS
 
 用飞牛的文件管理或 SCP 把项目解压到 NAS 磁盘，举例路径：
 
