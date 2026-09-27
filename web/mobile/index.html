@@ -4,7 +4,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>家悦K歌 · 点歌 & 遥控</title>
+<title>家悦K歌 · 点歌 & 互动</title>
 <style>
 :root{
   --bg:#08081c;--card:rgba(255,255,255,0.06);
@@ -26,8 +26,8 @@ header{
 /* 顶部标题栏：只保留居中标题，不再放搜索/刷新图标 */
 .topbar{display:flex;align-items:center;justify-content:center}
 .brand{font-size:17px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-/* 常驻播放控制行：改成一行显示，不允许换行；曲库搜索/遥控/队列各 tab 切换时
-   都保持可见，不再收在"遥控"tab 里，也不需要额外的卡片背景/标题包裹。 */
+/* 常驻播放控制行：改成一行显示，不允许换行；曲库搜索/互动/队列各 tab 切换时
+   都保持可见，不再收在"互动"tab 里，也不需要额外的卡片背景/标题包裹。 */
 .ctrl-row.main-row{display:flex;flex-wrap:nowrap;gap:8px;margin-top:12px}
 .ctrl-row.main-row .ctrl-btn{min-width:0;max-width:none;flex:1 1 0;padding:9px 2px}
 .ctrl-row.main-row .ci svg{width:19px;height:19px}
@@ -41,7 +41,7 @@ header{
 .tab.active{color:#fff;border-bottom-color:var(--accent)}
 .tab svg{width:15px;height:15px;vertical-align:-3px;margin-right:3px}
 
-/* ===== SEARCH BOX（常驻，不再局限于"点歌"tab，切到"队列"/"遥控"也能直接点歌） ===== */
+/* ===== SEARCH BOX（常驻，不再局限于"点歌"tab，切到"队列"/"互动"也能直接点歌） ===== */
 .search-box{
   margin:12px 0 0;display:flex;align-items:center;gap:8px;
   background:rgba(255,255,255,.07);border-radius:14px;padding:11px 14px;
@@ -134,7 +134,6 @@ header{
 .ctrl-btn .cl{font-size:11px;color:var(--sub)}
 #now-bar .nb-icon{flex-shrink:0;display:flex}
 #now-bar .nb-icon svg{width:26px;height:26px}
-.dpad-btn svg{width:22px;height:22px}
 .ctrl-btn.red .cl{color:var(--pink)}
 .ctrl-btn.red:active{background:rgba(255,79,155,.25);border-color:var(--pink)}
 .ctrl-btn.cyan .cl{color:var(--accent2)}
@@ -147,20 +146,24 @@ header{
 .ctrl-btn.voice-active{background:rgba(199,54,247,.38);border-color:var(--accent)}
 .ctrl-btn.voice-active .cl{color:var(--accent2)}
 
-/* D-pad */
-.dpad{
-  display:grid;grid-template-columns:1fr 1fr 1fr;
-  grid-template-rows:1fr 1fr 1fr;gap:8px;max-width:220px;margin:0 auto}
-.dpad-btn{
-  display:flex;align-items:center;justify-content:center;
-  height:64px;border-radius:14px;font-size:22px;
-  background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);
-  cursor:pointer;transition:.15s}
-.dpad-btn:active{transform:scale(.9);background:rgba(54,217,247,.2);border-color:var(--accent2)}
-.dpad-ok{
-  background:linear-gradient(135deg,var(--accent),var(--accent2));
-  font-size:15px;font-weight:700;border:none}
-.dpad-empty{background:transparent;border:none;pointer-events:none}
+/* 互动面板（预留）：欢呼/鼓掌/尖叫等互动音效界面后续实现 */
+.interact-placeholder{
+  display:flex;flex-direction:column;align-items:center;gap:8px;
+  padding:36px 0;color:var(--sub)}
+.interact-placeholder .ip-icon{font-size:44px}
+.interact-placeholder .ip-text{font-size:14px;color:var(--text)}
+.interact-placeholder .ip-sub{font-size:11px;color:var(--sub)}
+
+/* 互动面板：欢呼/鼓掌/尖叫等氛围音效按钮（点击后 TV 大屏播放） */
+.effect-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.effect-btn{
+  display:flex;flex-direction:column;align-items:center;gap:5px;
+  padding:16px 6px;border-radius:14px;
+  background:linear-gradient(145deg,rgba(255,255,255,.07),rgba(255,255,255,.02));
+  border:1px solid rgba(255,255,255,.09);color:var(--text);
+  font-size:14px;letter-spacing:1px;cursor:pointer;transition:transform .12s,background .12s}
+.effect-btn:active{transform:scale(.92);background:linear-gradient(145deg,rgba(199,54,247,.35),rgba(255,255,255,.05))}
+.effect-btn .eb-icon{font-size:26px;line-height:1}
 
 /* ===== FAB queue ===== */
 #queue-fab{
@@ -268,10 +271,10 @@ header{
 <body>
 <header>
   <div class="topbar">
-    <div class="brand">家悦K歌 · 点歌 & 遥控</div>
+    <div class="brand">家悦K歌 · 点歌 & 互动</div>
   </div>
 
-  <!-- 常驻播放控制：一行显示，切换"点歌/队列/遥控"任意 tab 都不会隐藏 -->
+  <!-- 常驻播放控制：一行显示，切换"点歌/队列/互动"任意 tab 都不会隐藏 -->
   <div class="ctrl-row main-row">
     <div class="ctrl-btn purple" onclick="sendCtrl('play_pause')">
       <span class="ci" id="r-play-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="10"/><line x1="10" y1="8" x2="10" y2="16"/><line x1="14" y1="8" x2="14" y2="16"/></svg></span><span class="cl" id="r-play-label">暂停</span>
@@ -287,7 +290,7 @@ header{
     </div>
   </div>
 
-  <!-- 常驻搜索框：不再收在"点歌"tab 里，切到"队列"/"遥控"页面也一直显示，
+  <!-- 常驻搜索框：不再收在"点歌"tab 里，切到"队列"/"互动"页面也一直显示，
        可以随时加歌不用先切回"点歌"tab -->
   <div class="search-box">
     <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
@@ -300,7 +303,7 @@ header{
   <div class="tabs">
     <div class="tab active" onclick="switchTab('search',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>点歌</div>
     <div class="tab" onclick="switchTab('queue',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>队列</div>
-    <div class="tab" onclick="switchTab('remote',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="3"/><line x1="10" y1="6" x2="14" y2="6"/><circle cx="12" cy="11" r="1.6" fill="currentColor" stroke="none"/><line x1="9" y1="16" x2="9" y2="16.01"/><line x1="12" y1="16" x2="12" y2="16.01"/><line x1="15" y1="16" x2="15" y2="16.01"/></svg>遥控</div>
+    <div class="tab" onclick="switchTab('remote',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>互动</div>
   </div>
 </header>
 
@@ -434,7 +437,7 @@ header{
 <!-- ====== QUEUE TAB ====== -->
 <div id="tab-queue" style="display:none"></div>
 
-<!-- ====== REMOTE TAB（播放控制已移到常驻header，这里只剩 TV 界面+方向导航） ====== -->
+<!-- ====== INTERACT TAB（互动入口；欢呼/鼓掌等互动界面预留后续实现） ====== -->
 <div id="tab-remote" style="display:none">
 
   <!-- Now playing -->
@@ -448,35 +451,16 @@ header{
     <div id="nb-prog-wrap"><div id="nb-prog-bar"><div id="nb-prog-fill"></div></div><div id="nb-prog-time"><span id="nb-tcur">0:00</span><span id="nb-ttot">0:00</span></div></div>
   </div>
 
-  <!-- View controls -->
+  <!-- 互动面板：点击发送互动音效指令，TV 大屏同步播放氛围音效 -->
   <div class="ctrl-section">
-    <div class="ctrl-title">📺 TV界面</div>
-    <div class="ctrl-row">
-      <div class="ctrl-btn" onclick="sendCtrl('home')">
-        <span class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></span><span class="cl">主页</span>
-      </div>
-      <div class="ctrl-btn cyan" onclick="sendCtrl('fullscreen')">
-        <span class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M21 16v3a2 2 0 0 1-2 2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/></svg></span><span class="cl">全屏</span>
-      </div>
-      <div class="ctrl-btn" onclick="sendCtrl('back')">
-        <span class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></span><span class="cl">返回</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- D-pad -->
-  <div class="ctrl-section">
-    <div class="ctrl-title">🕹 方向导航</div>
-    <div class="dpad">
-      <div class="dpad-btn dpad-empty"></div>
-      <div class="dpad-btn" onclick="sendCtrl('focus_up')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg></div>
-      <div class="dpad-btn dpad-empty"></div>
-      <div class="dpad-btn" onclick="sendCtrl('focus_left')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg></div>
-      <div class="dpad-btn dpad-ok" onclick="sendCtrl('ok')">确认</div>
-      <div class="dpad-btn" onclick="sendCtrl('focus_right')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></div>
-      <div class="dpad-btn dpad-empty"></div>
-      <div class="dpad-btn" onclick="sendCtrl('focus_down')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></div>
-      <div class="dpad-btn dpad-empty"></div>
+    <div class="ctrl-title">🎉 互动</div>
+    <div class="effect-grid">
+      <button class="effect-btn" onclick="sendEffect('cheer')"><span class="eb-icon">🎉</span><span>欢呼</span></button>
+      <button class="effect-btn" onclick="sendEffect('applause')"><span class="eb-icon">👏</span><span>鼓掌</span></button>
+      <button class="effect-btn" onclick="sendEffect('scream')"><span class="eb-icon">😱</span><span>尖叫</span></button>
+      <button class="effect-btn" onclick="sendEffect('whistle')"><span class="eb-icon">🎺</span><span>口哨</span></button>
+      <button class="effect-btn" onclick="sendEffect('boo')"><span class="eb-icon">👎</span><span>喝倒彩</span></button>
+      <button class="effect-btn" onclick="sendEffect('encore')"><span class="eb-icon">🔄</span><span>再来一首</span></button>
     </div>
   </div>
 
@@ -534,7 +518,7 @@ function applyPlaybackState(state){
 let ctrlProgress={queueId:null,currentTime:0,updatedAt:Date.now(),paused:true};
 function connectWS(){
   const ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);
-  ws.onopen=()=>{ sendWS({type:'role_announce',deviceId:getDevId(),deviceName:'手机遥控',role:'controller'}); };
+  ws.onopen=()=>{ sendWS({type:'role_announce',deviceId:getDevId(),deviceName:'手机互动',role:'controller'}); };
   ws.onmessage=ev=>{
     const msg=JSON.parse(ev.data);
     if(msg.type==='queue'){queueData=msg.data;onQueue();}
@@ -565,6 +549,13 @@ setInterval(tickCtrlProgress,500);
 
 function sendCtrl(action){ sendWS({type:'control',action}); }
 function sendWS(obj){ if(window._ws&&window._ws.readyState===1) window._ws.send(JSON.stringify(obj)); }
+
+// 互动氛围音效：点击按钮 → 发送 effect 消息 → TV 大屏播放（欢呼/鼓掌等）
+function sendEffect(name){
+  const nick=nicknameInput.value.trim()||'手机';
+  sendWS({type:'effect',effect:name,nickname:nick});
+  showToast('已发送 🎉');
+}
 
 function onQueue(){
   const playing=queueData.find(q=>q.status==='playing');
@@ -693,7 +684,7 @@ function renderSongsInto(el,list,emptyText){
   el.appendChild(frag);
 }
 async function addSong(id, title){
-  const nick=nicknameInput.value.trim()||'匿名歌手';
+  const nick=nicknameInput.value.trim()||'手机';
   await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({song_id:id,nickname:nick})});
   showToast(`《${title}》已加入队列 🎶`);
 }

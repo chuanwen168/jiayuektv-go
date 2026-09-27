@@ -71,7 +71,7 @@ func (h *Hub) Handle(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		switch t, _ := p["type"].(string); t {
-		case "control", "state", "progress":
+		case "control", "state", "progress", "effect":
 			h.Broadcast(msg)
 		}
 	}

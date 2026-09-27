@@ -89,6 +89,20 @@ body.fs #controlbar{display:none}
   padding:6px 14px;border-radius:999px;background:rgba(255,255,255,.05);transition:right .2s}
 body.fs #conn{right:18px}
 #conn.on{color:#7dffb0;background:rgba(61,220,132,.12)}
+#effect-toast{
+  position:fixed;top:14%;left:50%;transform:translate(-50%,-20px);
+  background:rgba(20,24,34,.85);border:1px solid rgba(255,255,255,.28);
+  color:#fff;font-size:34px;padding:14px 40px;border-radius:44px;z-index:999;
+  opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;
+  box-shadow:0 8px 30px rgba(0,0,0,.45);letter-spacing:1px}
+#effect-toast.show{opacity:1;transform:translate(-50%,0)}
+#effect-tip{
+  position:fixed;top:26%;left:50%;transform:translate(-50%,-10px);
+  background:rgba(120,80,0,.85);border:1px solid rgba(255,200,80,.6);
+  color:#ffe08a;font-size:26px;padding:12px 32px;border-radius:36px;z-index:999;
+  opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;
+  box-shadow:0 8px 30px rgba(0,0,0,.45);letter-spacing:1px}
+#effect-tip.show{opacity:1;transform:translate(-50%,0)}
 </style>
 </head>
 <body>
@@ -140,6 +154,7 @@ function connectWS(){
     let msg; try{ msg=JSON.parse(ev.data); }catch(e){ return; }
     if(msg.type==='queue'&&msg.data){ queueData=msg.data; handleQueue(); }
     if(msg.type==='control') handleControl(msg.action, msg);
+    if(msg.type==='effect') playEffect(msg.effect, msg.nickname);
   };
   ws.onclose=()=>{ connEl.textContent='已断开，重连中…'; connEl.classList.remove('on');
     clearTimeout(wsTimer); wsTimer=setTimeout(connectWS,2500); };
@@ -311,6 +326,141 @@ function toggleFullscreen(){
   else{ document.documentElement.requestFullscreen().catch(()=>{}); }
 }
 
+// ===== 互动氛围音效（Web Audio 合成，无需音频文件）：手机端发送 effect 消息触发 =====
+let _actx=null;
+function getAudioCtx(){ if(!_actx){ _actx=new (window.AudioContext||window.webkitAudioContext)(); } return _actx; }
+async function ensureAudio(){
+  const ctx=getAudioCtx(); if(!ctx) return false;
+  if(ctx.state==='suspended'){ try{ await ctx.resume(); }catch(e){} }
+  return ctx.state==='running';
+}
+// 浏览器自动播放限制：首次点击/按键/触摸大屏即解锁音效（KTV场景下，大屏被按过遥控OK键
+// 或点过一次屏幕后，后续所有氛围音效都能正常出声；播放歌曲时音频通道已解锁也会顺带恢复）
+['pointerdown','keydown','touchstart'].forEach(ev=>window.addEventListener(ev,()=>{
+  ensureAudio().then(ok=>{
+    if(ok){ const tip=document.getElementById('effect-tip');
+      if(tip){ tip.textContent='🔊 音效已开启'; tip.classList.add('show'); clearTimeout(tip._tm);
+        tip._tm=setTimeout(()=>tip.classList.remove('show'),1600); } }
+  });
+},{once:true}));
+function effectNoise(ctx,dur){
+  const buf=ctx.createBuffer(1,Math.ceil(ctx.sampleRate*dur),ctx.sampleRate);
+  const d=buf.getChannelData(0); for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+  return buf;
+}
+// 优先播放真实音效文件（web/tv/sfx/<name>.mp3 / .wav），不存在或失败回退 Web Audio 合成。
+// 文件命名：cheer.mp3(欢呼) applause.mp3(鼓掌) scream.mp3(尖叫) whistle.mp3(口哨)
+//            boo.mp3(喝倒彩) encore.mp3(再来一首)，支持 mp3 / wav 任选其一。
+function playSfxFile(name){
+  return new Promise(resolve=>{
+    let tried=0;
+    const tryNext=()=>{
+      tried++;
+      const ext=tried===1?'mp3':(tried===2?'wav':null);
+      if(!ext){ resolve(false); return; }
+      const a=new Audio(`/tv/sfx/${name}.${ext}`);
+      a.volume=0.95;
+      const fail=()=>{ a.onplay=null; a.onerror=null; tryNext(); };
+      a.onerror=fail;
+      a.onplay=()=>{ a.onplay=null; a.onerror=null; a.onended=()=>resolve(true); };
+      a.play().catch(fail);
+    };
+    tryNext();
+  });
+}
+async function playEffect(name,by){
+  const ctx=getAudioCtx(); if(!ctx) return;
+  const label={cheer:'欢呼',applause:'鼓掌',scream:'尖叫',whistle:'口哨',boo:'喝倒彩',encore:'再来一首'}[name]||name;
+  showEffectToast(by||'匿名歌手',label);
+  const ok=await ensureAudio();
+  if(!ok){
+    // 浏览器自动播放限制拦截了音效：提示用户在大屏上点一次屏幕/遥控OK键即可开启
+    let tip=document.getElementById('effect-tip');
+    if(!tip){ tip=document.createElement('div'); tip.id='effect-tip'; document.body.appendChild(tip); }
+    tip.textContent='⚠️ 音效被浏览器拦截：请在大屏上点击一次屏幕开启音效';
+    tip.classList.remove('show'); void tip.offsetWidth; tip.classList.add('show');
+    clearTimeout(tip._tm); tip._tm=setTimeout(()=>tip.classList.remove('show'),3600);
+    return;
+  }
+  const usedFile=await playSfxFile(name);
+  if(usedFile) return;
+  const t=ctx.currentTime;
+  switch(name){
+    case 'cheer':{
+      const src=ctx.createBufferSource(); src.buffer=effectNoise(ctx,2.8);
+      const bp=ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=1000; bp.Q.value=0.6;
+      const g=ctx.createGain();
+      g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.7,t+0.25);
+      const lfo=ctx.createOscillator(); lfo.frequency.value=7;
+      const lg=ctx.createGain(); lg.gain.value=0.2; lfo.connect(lg); lg.connect(g.gain);
+      g.gain.exponentialRampToValueAtTime(0.5,t+2.6); g.gain.exponentialRampToValueAtTime(0.0001,t+2.8);
+      src.connect(bp); bp.connect(g); g.connect(ctx.destination);
+      src.start(t); lfo.start(t); src.stop(t+2.85); lfo.stop(t+2.85); break;
+    }
+    case 'applause':{
+      const n=Math.floor(28+Math.random()*36);
+      for(let i=0;i<n;i++){
+        const st=t+Math.random()*2.2;
+        const src=ctx.createBufferSource(); src.buffer=effectNoise(ctx,0.06);
+        const hp=ctx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=1200;
+        const g=ctx.createGain(); g.gain.setValueAtTime(0.45*Math.random()+0.18,st);
+        g.gain.exponentialRampToValueAtTime(0.001,st+0.045);
+        src.connect(hp); hp.connect(g); g.connect(ctx.destination);
+        src.start(st); src.stop(st+0.07);
+      } break;
+    }
+    case 'scream':{
+      const src=ctx.createOscillator(); src.type='sawtooth';
+      src.frequency.setValueAtTime(700,t); src.frequency.exponentialRampToValueAtTime(1500,t+0.5);
+      const vib=ctx.createOscillator(); vib.frequency.value=9; const vg=ctx.createGain(); vg.gain.value=70;
+      vib.connect(vg); vg.connect(src.frequency);
+      const n=ctx.createBufferSource(); n.buffer=effectNoise(ctx,1.1);
+      const bp=ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=1800; bp.Q.value=1;
+      const g=ctx.createGain(); g.gain.setValueAtTime(0.0001,t);
+      g.gain.exponentialRampToValueAtTime(0.42,t+0.1); g.gain.exponentialRampToValueAtTime(0.0001,t+1.1);
+      src.connect(g); n.connect(bp); bp.connect(g); g.connect(ctx.destination);
+      src.start(t); vib.start(t); n.start(t); src.stop(t+1.15); vib.stop(t+1.15); n.stop(t+1.15); break;
+    }
+    case 'whistle':{
+      const src=ctx.createOscillator(); src.type='sine';
+      src.frequency.setValueAtTime(2300,t); src.frequency.exponentialRampToValueAtTime(3000,t+0.25);
+      src.frequency.exponentialRampToValueAtTime(2500,t+0.7);
+      const vib=ctx.createOscillator(); vib.frequency.value=11; const vg=ctx.createGain(); vg.gain.value=35;
+      vib.connect(vg); vg.connect(src.frequency);
+      const g=ctx.createGain(); g.gain.setValueAtTime(0.0001,t);
+      g.gain.exponentialRampToValueAtTime(0.3,t+0.08); g.gain.exponentialRampToValueAtTime(0.0001,t+0.75);
+      src.connect(g); g.connect(ctx.destination);
+      src.start(t); vib.start(t); src.stop(t+0.8); vib.stop(t+0.8); break;
+    }
+    case 'boo':{
+      const src=ctx.createOscillator(); src.type='sawtooth';
+      src.frequency.setValueAtTime(180,t); src.frequency.exponentialRampToValueAtTime(85,t+0.7);
+      const lp=ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=400;
+      const n=ctx.createBufferSource(); n.buffer=effectNoise(ctx,1.2);
+      const g=ctx.createGain(); g.gain.setValueAtTime(0.0001,t);
+      g.gain.exponentialRampToValueAtTime(0.35,t+0.12); g.gain.exponentialRampToValueAtTime(0.0001,t+1.15);
+      src.connect(lp); lp.connect(g); n.connect(g); g.connect(ctx.destination);
+      src.start(t); n.start(t); src.stop(t+1.2); n.stop(t+1.2); break;
+    }
+    case 'encore':{
+      [660,880].forEach((f,i)=>{
+        const o=ctx.createOscillator(); o.type='sine'; o.frequency.value=f;
+        const g=ctx.createGain(); const st=t+i*0.12;
+        g.gain.setValueAtTime(0.0001,st); g.gain.exponentialRampToValueAtTime(0.4,st+0.02);
+        g.gain.exponentialRampToValueAtTime(0.001,st+0.5);
+        o.connect(g); g.connect(ctx.destination); o.start(st); o.stop(st+0.55);
+      }); break;
+    }
+  }
+}
+function showEffectToast(by,label){
+  let el=document.getElementById('effect-toast');
+  if(!el){ el=document.createElement('div'); el.id='effect-toast'; document.body.appendChild(el); }
+  el.innerHTML=`🎉 ${by} · ${label}`;
+  el.classList.remove('show'); void el.offsetWidth; el.classList.add('show');
+  clearTimeout(el._tm); el._tm=setTimeout(()=>el.classList.remove('show'),2600);
+}
+
 function handleControl(action, msg){
   switch(action){
     case 'play_pause':
@@ -324,11 +474,7 @@ function handleControl(action, msg){
     case 'volume_up': player.volume=Math.min(1,player.volume+0.1); break;
     case 'volume_down': player.volume=Math.max(0,player.volume-0.1); break;
     case 'eq': if(msg && msg.gains) applyEQ(msg.gains); break;
-    case 'fullscreen': toggleFullscreen(); break;
-    case 'home': location.href='/'; break;
-    case 'ok':
-      if(player.paused){ player.play(); } else { player.pause(); }
-      sendState(); break;
+    // home/fullscreen/ok/focus_* 已随手机端遥控入口下线，不再处理
   }
 }
 
@@ -354,9 +500,10 @@ function applyEQ(gains){
   if(!eqFilters.length) return;
   (gains||[]).forEach((g,i)=>{ if(eqFilters[i]) eqFilters[i].gain.value = parseFloat(g)||0; });
 }
-// 浏览器自动播放策略：用户手势链外启动的播放需显式 resume
+// 浏览器自动播放策略：用户手势链外启动的播放需显式 resume；顺带恢复氛围音效上下文
 player.addEventListener('play', ()=>{
   if(audioCtx && audioCtx.state==='suspended') audioCtx.resume().catch(()=>{});
+  ensureAudio();
   sendState();
 });
 function toggleVoice(){

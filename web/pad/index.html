@@ -467,7 +467,7 @@ input[type=range].eq-slider::-moz-range-thumb{width:20px;height:20px;border-radi
     </div>
     <div class="setting-row">
       <div><div class="sl">点歌昵称</div><div class="sd">显示在队列里你的名字</div></div>
-      <input id="set-nick" placeholder="匿名歌手" style="width:160px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:8px 12px;color:var(--text);font-size:13px;outline:none">
+      <input id="set-nick" placeholder="点歌台（未填默认）" style="width:160px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:8px 12px;color:var(--text);font-size:13px;outline:none">
     </div>
     <div class="setting-row">
       <div><div class="sl">服务器地址</div><div class="sd" id="set-server">—</div></div>
@@ -641,7 +641,7 @@ function renderSongsInto(el, list, emptyText){
   el.appendChild(frag);
 }
 async function addSong(id, title){
-  const r = await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({song_id:id,nickname:nickname||'匿名歌手'})});
+  const r = await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({song_id:id,nickname:nickname||'点歌台'})});
   if(r.status===409){ toast(`《${title}》已在队列中`); return; }
   toast(`《${title}》已加入队列 🎶`);
 }

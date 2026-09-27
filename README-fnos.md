@@ -1,7 +1,7 @@
 # 家悦K歌 局域网点歌系统 — 飞牛系统（fnOS）部署指南
 
 > 📄 总览与所有安装方式（Windows / 通用 Linux / 各端介绍）见 **[README.md](README.md)**
-> 版本：**v1.0.1**（Go 语言重写版服务端），前端四端（TV 播放端 / PAD 点歌台 / 手机点歌 / 曲库管理）不变。
+> 版本：**v1.0.2**（Go 语言重写版服务端），前端四端（TV 播放端 / PAD 点歌台 / 手机点歌 / 曲库管理）不变。
 
 本包已含交叉编译好的 `linux/amd64` 静态二进制，飞牛（x86）上构建无需 Go 工具链。
 
@@ -20,7 +20,7 @@ nano docker-compose.yml
 ```yaml
 services:
   jiayue-ktv:
-    image: ghcr.io/chuanwen168/jiayuektv-go:1.0.1
+    image: ghcr.io/chuanwen168/jiayuektv-go:1.0.2
     container_name: jiayue-ktv
     restart: unless-stopped
     ports:
@@ -124,7 +124,7 @@ sudo docker compose -f docker-compose.fnos.yml up -d --build
 ### TV 播放端
 
 - **网页版**：电视/盒子浏览器打开 `http://飞牛IP:8086/tv/`（大屏待机画面、顶部滚动字幕、原/伴唱、切歌、音量、均衡器、全屏）
-- **安卓 TV 原生 App**：下载 `jiayuektv-tv-1.0.1.apk`（本仓库 Release 页）安装到安卓电视/盒子（Android 6.0+），原生全屏播放、遥控器操作；装好后在设置里填服务器地址 `飞牛IP:8086`
+- **安卓 TV 原生 App**：下载 `jiayuektv-tv-1.0.2.apk`（本仓库 Release 页）安装到安卓电视/盒子（Android 6.0+），原生全屏播放、遥控器操作；装好后在设置里填服务器地址 `飞牛IP:8086`
 
 ## 五、功能说明
 

@@ -86,7 +86,7 @@ nano docker-compose.yml
 ```yaml
 services:
   jiayue-ktv:
-    image: ghcr.io/chuanwen168/jiayuektv-go:1.0.1
+    image: ghcr.io/chuanwen168/jiayuektv-go:1.0.2
     container_name: jiayue-ktv
     restart: unless-stopped
     ports:
@@ -194,7 +194,7 @@ sudo docker logs -f jiayue-ktv-go
 - **多音轨**：原唱/伴唱一键切换（需歌曲本身是双音轨）
 - 播放降级链：hls.js → 原生 HLS → 直连视频流，黑屏/转圈自动恢复
 
-### 2️⃣ 安卓 TV 原生客户端（`jiayuektv-tv-1.0.1.apk`）
+### 2️⃣ 安卓 TV 原生客户端（`jiayuektv-tv-1.0.2.apk`）
 
 适合**安卓电视 / 电视盒子**（Android 6.0 及以上），原生全屏播放、遥控器操作：
 
