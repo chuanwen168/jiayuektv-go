@@ -20,7 +20,7 @@ nano docker-compose.yml
 ```yaml
 services:
   jiayue-ktv:
-    image: ghcr.io/chuanwen168/jiayuektv-go:1.0.2
+    image: ghcr.io/chuanwen168/jiayuektv-go:1.0.2   # 想永远用最新版可改成 :latest
     container_name: jiayue-ktv
     restart: unless-stopped
     ports:
