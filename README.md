@@ -71,6 +71,52 @@
 
 > 🐟 **飞牛（fnOS，x86）用户请以 [README-fnos.md](README-fnos.md) 为准**——飞牛专属的完整部署/升级/故障排查指南（含目录挂载、核显直通、端口说明）。本段为通用 Linux 步骤，两者按需取用。
 
+### 方式一（推荐）：直接拉取镜像，复制即用（无需下载上传项目）
+
+SSH 登录 NAS 后执行：
+
+```bash
+mkdir -p /vol1/1000/docker/ktvhome && cd /vol1/1000/docker/ktvhome
+mkdir -p data mv singer
+nano docker-compose.yml
+```
+
+把下面内容粘贴保存为 `docker-compose.yml`：
+
+```yaml
+services:
+  jiayue-ktv:
+    image: ghcr.io/chuanwen168/jiayuektv-go:1.0.1
+    container_name: jiayue-ktv
+    restart: unless-stopped
+    ports:
+      - "8086:8080"          # 访问端口：http://局域网IP:8086
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=8080
+      - DATA_DIR=/data
+      - ADMIN_PASSWORD=admin888          # 管理后台("/admin")登录密码，建议改掉
+      - VAAPI_DEVICE=/dev/dri/renderD128 # 核显硬件转码用，没有核显就删掉这行
+      - HLS_CACHE_MAX_AGE_DAYS=3         # 转码缓存超过几天没人点就自动清理
+    volumes:
+      - ./data:/data                 # 应用数据(数据库、封面等)，必须挂载
+      # 曲库挂载：本地曲库挂到 /mv/<自定义名>，网盘曲库挂到 /mv-net/<自定义名>
+      - ./mv:/mv/library1            # 把歌曲放进 ./mv 目录（可建子文件夹分类）
+      - ./singer:/singer             # 歌手头像目录，图片名对应歌手名，如 周杰伦.jpg
+      # 挂载完成后，还需要去后台「曲库管理→曲库来源」里把新目录逐个启用，才会真正参与扫描
+    devices:
+      - /dev/dri:/dev/dri            # 核显硬件转码用，没有核显就删掉这行
+```
+
+启动：
+
+```bash
+sudo docker compose up -d
+```
+
+> 以后服务端更新：`sudo docker compose pull && sudo docker compose up -d`，数据库和曲库（`./data`、`./mv`）不受影响。
+
+### 方式二（从 Release 安装包部署）
 ### 第 1 步：到 [Release 下载页](https://github.com/chuanwen168/jiayuektv-go/releases) 下载对应版本项目 zip 包（x86 飞牛选 ktvhome-linux-amd64.zip），把项目包上传到 NAS
 
 用飞牛的文件管理或 SCP 把项目解压到 NAS 磁盘，举例路径：
