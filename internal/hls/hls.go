@@ -35,6 +35,11 @@ const SegTime = 6
 // CompleteMarker 转码完成标记文件名。
 const CompleteMarker = ".complete"
 
+// CacheVersion 转码产物格式版本。每次改变转码参数/切片策略（如新增关键帧
+// 校验、码率限制）都递增，旧版本缓存会被 isFresh 判定失效并自动重建，
+// 避免"旧逻辑生成的坏缓存（从中间起播/码率过高）被直接复用"。
+const CacheVersion = 2
+
 var (
 	safeVideoCodecs = map[string]bool{"h264": true}
 	safeAudioCodecs = map[string]bool{"aac": true}
@@ -148,6 +153,36 @@ func probeCodecName(filepath, selector string) string {
 		return ""
 	}
 	return strings.ToLower(strings.TrimSpace(lines[0]))
+}
+
+// probeFirstKeyframeTime 探测视频流第一个关键帧的时间（秒）。
+// 失败返回 -1。用于 h264 直拷贝前判断：若源开头没有及时的关键帧，
+// copy 切片会从中间关键帧处开始（表现为"从中间开始播放"），此时必须转码。
+func probeFirstKeyframeTime(filepath string) float64 {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	out, err := execCommand(ctx, binpath.Resolve("ffprobe"),
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-skip_frame", "nokey",
+		"-show_entries", "frame=pts_time",
+		"-of", "csv=p=0",
+		"-read_intervals", "%+#1",
+		filepath,
+	)
+	if err != nil {
+		return -1
+	}
+	line := strings.TrimSpace(strings.Split(string(out), "\n")[0])
+	if line == "" {
+		return -1
+	}
+	f, err := strconv.ParseFloat(line, 64)
+	if err != nil {
+		return -1
+	}
+	return f
 }
 
 // runFFmpeg 执行 ffmpeg，出错时返回包含退出码与 stderr 尾部信息的 error。
@@ -342,11 +377,15 @@ func (h *HLS) buildVideoRendition(src, dir, songTag string) error {
 	common := []string{"-loglevel", "error", "-y", "-i", src, "-map", "0:v:0", "-an"}
 	out := hlsOutArgs(filepath.Join(dir, "video_%04d.ts"), filepath.Join(dir, "video.m3u8"))
 	codec := probeCodecName(src, "v:0")
+	firstKey := probeFirstKeyframeTime(src)
 	t0 := time.Now()
 
-	logger.Info("TRANSCODE", fmt.Sprintf("%s 视频轨: 源编码=%s", songTag, codecOrUnknown(codec)))
+	logger.Info("TRANSCODE", fmt.Sprintf("%s 视频轨: 源编码=%s, 首个关键帧=%.3fs", songTag, codecOrUnknown(codec), firstKey))
 
-	if safeVideoCodecs[codec] {
+	// h264 直拷贝条件：编码安全 且 源开头有及时的关键帧（<1s）。
+	// 若源开头关键帧过晚（如从视频中间裁剪的素材、开头无 IDR），copy 切片会
+	// 从第一个关键帧处开始，播放器表现为"从中间开始播放"，此时必须转码保证从 0 起播。
+	if safeVideoCodecs[codec] && firstKey >= 0 && firstKey < 1.0 {
 		args := append(append([]string{}, common...), append([]string{"-c:v", "copy"}, out...)...)
 		if err := runFFmpeg(args...); err == nil {
 			logger.Info("TRANSCODE", fmt.Sprintf("%s 视频轨: 直接封装拷贝(copy)完成，耗时 %dms，未使用核显", songTag, time.Since(t0).Milliseconds()))
@@ -354,6 +393,8 @@ func (h *HLS) buildVideoRendition(src, dir, songTag string) error {
 		} else {
 			logger.Warn("TRANSCODE", fmt.Sprintf("%s 视频轨: h264 -c copy 仍失败，改为重新编码: %s", songTag, lastLine(err.Error())))
 		}
+	} else if safeVideoCodecs[codec] {
+		logger.Info("TRANSCODE", fmt.Sprintf("%s 视频轨: 源开头关键帧过晚(%.3fs>1s)，copy 会从中间起播，改为重新编码", songTag, firstKey))
 	}
 
 	// 硬编回退链（1.2.0）：VAAPI（Tier1 硬解硬编 / Tier2 软解硬编）→
@@ -365,7 +406,8 @@ func (h *HLS) buildVideoRendition(src, dir, songTag string) error {
 			"-loglevel", "error", "-y",
 			"-hwaccel", "vaapi", "-hwaccel_device", h.VAAPIDevice, "-hwaccel_output_format", "vaapi",
 			"-i", src, "-map", "0:v:0", "-an",
-			"-c:v", "h264_vaapi",
+			"-c:v", "h264_vaapi", "-g", "48",
+			"-b:v", "4000k", "-maxrate", "6000k", "-bufsize", "9000k",
 		}
 		args = append(args, out...)
 		err := runFFmpeg(args...)
@@ -380,7 +422,8 @@ func (h *HLS) buildVideoRendition(src, dir, songTag string) error {
 		args = append(append([]string{}, common...), []string{
 			"-vaapi_device", h.VAAPIDevice,
 			"-vf", "format=nv12,hwupload",
-			"-c:v", "h264_vaapi",
+			"-c:v", "h264_vaapi", "-g", "48",
+			"-b:v", "4000k", "-maxrate", "6000k", "-bufsize", "9000k",
 		}...)
 		args = append(args, out...)
 		err = runFFmpeg(args...)
@@ -396,7 +439,7 @@ func (h *HLS) buildVideoRendition(src, dir, songTag string) error {
 	if h.detectNVENC() {
 		tN := time.Now()
 		args := append(append([]string{}, common...), []string{
-			"-c:v", "h264_nvenc", "-preset", "p4",
+			"-c:v", "h264_nvenc", "-preset", "p4", "-g", "48",
 			"-b:v", "6000k", "-maxrate", "8000k", "-bufsize", "12000k",
 			"-pix_fmt", "yuv420p",
 		}...)
@@ -409,10 +452,13 @@ func (h *HLS) buildVideoRendition(src, dir, songTag string) error {
 		logger.Warn("TRANSCODE", fmt.Sprintf("%s 视频轨: NVENC 硬编失败，回退到纯软件编码(Tier3 libx264): %s", songTag, lastLine(err.Error())))
 	}
 
-	// Tier 3：纯软件编码兜底
+	// Tier 3：纯软件编码兜底（AV1/H265 源转码后码率会明显高于原片，限制输出
+	// 码率避免安卓端解码/局域网传输压力过大导致起播卡顿）
 	t3 := time.Now()
 	args := append(append([]string{}, common...), []string{
-		"-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+		"-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+		"-b:v", "4000k", "-maxrate", "6000k", "-bufsize", "9000k",
+		"-g", "48", "-sc_threshold", "0", "-pix_fmt", "yuv420p",
 	}...)
 	args = append(args, out...)
 	if err := runFFmpeg(args...); err != nil {
@@ -535,7 +581,7 @@ func (h *HLS) buildHLS(song *db.Song, dir string) error {
 		}
 	}
 
-	_ = os.WriteFile(h.completeMarkerPath(song.ID), []byte(strconv.FormatInt(time.Now().UnixMilli(), 10)), 0o644)
+	_ = os.WriteFile(h.completeMarkerPath(song.ID), []byte(fmt.Sprintf("%d|%d", CacheVersion, time.Now().UnixMilli())), 0o644)
 	logger.Info("TRANSCODE", fmt.Sprintf("%s 全部轨道转码完成，总耗时 %dms", songTag, time.Since(t0).Milliseconds()))
 	return nil
 }
@@ -549,7 +595,9 @@ func titleOrFilename(song *db.Song) string {
 
 // ---------- 渐进式生成 ----------
 
-// isFresh 判断是否已有可复用的完整转码缓存：.complete 标记存在且不早于源文件。
+// isFresh 判断是否已有可复用的完整转码缓存：
+// .complete 标记存在、版本号与当前 CacheVersion 一致、且不早于源文件。
+// 版本不一致（旧逻辑产物）或早于源文件（源被替换）都视为不可复用。
 func (h *HLS) isFresh(id int64, srcPath string) bool {
 	marker := h.completeMarkerPath(id)
 	srcStat, err1 := os.Stat(srcPath)
@@ -557,7 +605,19 @@ func (h *HLS) isFresh(id int64, srcPath string) bool {
 	if err1 != nil || err2 != nil {
 		return false
 	}
-	return !outStat.ModTime().Before(srcStat.ModTime())
+	if !outStat.ModTime().After(srcStat.ModTime()) {
+		return false
+	}
+	// 版本校验：标记内容格式 "版本|时间戳"。旧版（纯时间戳）或版本不符 → 失效重建。
+	b, err := os.ReadFile(marker)
+	if err != nil {
+		return false
+	}
+	ver, _, ok := strings.Cut(strings.TrimSpace(string(b)), "|")
+	if !ok || ver != strconv.Itoa(CacheVersion) {
+		return false
+	}
+	return true
 }
 
 func (h *HLS) isBuilding(id int64) bool {

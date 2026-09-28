@@ -249,7 +249,10 @@ function loadPlayer(url){
   if(hls){ hls.destroy(); hls=null; }
   hlsErr = 0;
   if(window.Hls && Hls.isSupported()){
-    hls = new Hls({enableWorker:true, lowLatencyMode:false});
+    // 渐进式转码的 event playlist 转码完成前没有 ENDLIST，hls.js 会当 live 流
+    // 从 live edge（末尾）起播 → 首次播放从中间开始。startPosition:0 强制从头，
+    // liveSyncDuration 设极大值禁用"落后过多跳回 live edge"，保证渐进转码期间稳定从头播。
+    hls = new Hls({enableWorker:true, lowLatencyMode:false, startPosition:0, liveSyncDuration:Number.MAX_SAFE_INTEGER});
     hls.loadSource(url);
     hls.attachMedia(player);
     hls.on(Hls.Events.MANIFEST_PARSED, ()=>{ hlsErr=0; player.play().catch(()=>{}); });
