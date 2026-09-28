@@ -1,0 +1,236 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <!-- 播放画面（全屏） -->
+    <androidx.media3.ui.PlayerView
+        android:id="@+id/playerView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:use_controller="false"
+        app:resize_mode="fit"
+        app:show_buffering="always" />
+
+    <!-- 待机界面（未点歌/切完最后一首，仿网页 TV 大屏） -->
+    <LinearLayout
+        android:id="@+id/idleView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/idleLogo"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:letterSpacing="0.17"
+            android:text="家悦K歌"
+            android:textColor="#36D9F7"
+            android:textSize="46sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/idleTip"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:letterSpacing="0.15"
+            android:text="播放端已就绪"
+            android:textColor="#9A9AB8"
+            android:textSize="20sp" />
+
+        <TextView
+            android:id="@+id/idleSub"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="请在点歌台 / 手机端点歌，这里会自动开始播放"
+            android:textColor="#5D5D7A"
+            android:textSize="14sp" />
+    </LinearLayout>
+
+    <!-- 点击唤出控制层（覆盖全屏的透明层，优先于视频手势） -->
+    <View
+        android:id="@+id/touchLayer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clickable="true"
+        android:focusable="false" />
+
+    <!-- 顶部滚动字幕容器（字幕在其内部自由横移） -->
+    <FrameLayout
+        android:id="@+id/tickerHost"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:paddingTop="16dp" />
+
+    <!-- 氛围互动浮层（仿网页 TV：#effect-toast，顶部居中，出现约2.6秒自动消失） -->
+    <TextView
+        android:id="@+id/effectToast"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="120dp"
+        android:background="@drawable/bg_effect_toast"
+        android:gravity="center"
+        android:letterSpacing="0.04"
+        android:paddingStart="34dp"
+        android:paddingEnd="34dp"
+        android:paddingTop="11dp"
+        android:paddingBottom="11dp"
+        android:textColor="#FFFFFFFF"
+        android:textSize="26sp"
+        android:visibility="gone" />
+
+    <!-- 右上角二维码（扫码点歌） -->
+    <ImageView
+        android:id="@+id/qrView"
+        android:layout_width="160dp"
+        android:layout_height="160dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="20dp"
+        android:layout_marginEnd="20dp"
+        android:background="#EEFFFFFF"
+        android:padding="10dp"
+        android:visibility="gone" />
+
+    <!-- 悬浮控制层（底部） -->
+    <LinearLayout
+        android:id="@+id/controlBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="#88000000"
+        android:gravity="center_vertical"
+        android:orientation="vertical"
+        android:paddingTop="10dp"
+        android:paddingBottom="14dp">
+
+        <!-- 标题行：正在播放 / 下一曲 -->
+        <TextView
+            android:id="@+id/tvInfo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:singleLine="true"
+            android:textColor="#FFFFFFFF"
+            android:textSize="15sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnPlay"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_margin="5dp"
+                android:background="@drawable/btn_ctrl"
+                android:minWidth="100dp"
+                android:text="暂停"
+                android:textColor="#FFFFFFFF"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/btnRepeat"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_margin="5dp"
+                android:background="@drawable/btn_ctrl"
+                android:minWidth="100dp"
+                android:text="重唱"
+                android:textColor="#FFFFFFFF"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/btnNext"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_margin="5dp"
+                android:background="@drawable/btn_ctrl"
+                android:minWidth="100dp"
+                android:text="切歌"
+                android:textColor="#FFFFFFFF"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/btnVolDown"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_margin="5dp"
+                android:background="@drawable/btn_ctrl"
+                android:minWidth="100dp"
+                android:text="音量-"
+                android:textColor="#FFFFFFFF"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/btnVolUp"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_margin="5dp"
+                android:background="@drawable/btn_ctrl"
+                android:minWidth="100dp"
+                android:text="音量+"
+                android:textColor="#FFFFFFFF"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/btnVoice"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_margin="5dp"
+                android:background="@drawable/btn_ctrl"
+                android:minWidth="100dp"
+                android:text="伴唱"
+                android:textColor="#FFFFFFFF"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/btnScan"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_margin="5dp"
+                android:background="@drawable/btn_ctrl"
+                android:minWidth="100dp"
+                android:text="扫码"
+                android:textColor="#FFFFFFFF"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/btnSettings"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:layout_margin="5dp"
+                android:background="@drawable/btn_ctrl"
+                android:minWidth="100dp"
+                android:text="设置"
+                android:textColor="#FFFFFFFF"
+                android:textSize="16sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+</FrameLayout>
