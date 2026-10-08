@@ -115,6 +115,31 @@ sudo docker compose up -d
 ```
 
 > 以后服务端更新：`sudo docker compose pull && sudo docker compose up -d`，数据库和曲库（`./data`、`./mv`）不受影响。
+>
+拉取失败，可以使用腾讯源
+services:
+  jiayue-ktv:
+    image: ccr.ccs.tencentyun.com/chuanwen168/jiayuektv-go:latest # 最低版本v1.0.3
+    container_name: jiayue-ktv
+    restart: unless-stopped
+    ports:
+      - "8086:8080"          # 访问端口：http://局域网IP:8086
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=8080
+      - DATA_DIR=/data
+      - ADMIN_PASSWORD=admin888          # 管理后台("/admin")登录密码，建议改掉
+      - VAAPI_DEVICE=/dev/dri/renderD128 # 核显硬件转码用，没有核显就删掉这行
+      - HLS_CACHE_MAX_AGE_DAYS=3         # 转码缓存超过几天没人点就自动清理
+    volumes:
+      - ./data:/data                 # 应用数据(数据库、封面等)，必须挂载
+      # 曲库挂载：本地曲库挂到 /mv/<自定义名>，网盘曲库挂到 /mv-net/<自定义名>
+      - ./mv:/mv/library1            # 把歌曲放进 ./mv 目录（可建子文件夹分类）
+      - ./singer:/singer             # 歌手头像目录，图片名对应歌手名，如 周杰伦.jpg
+      # 挂载完成后，还需要去后台「曲库管理→曲库来源」里把新目录逐个启用，才会真正参与扫描
+    devices:
+      - /dev/dri:/dev/dri            # 核显硬件转码用，没有核显就删掉这行
+
 
 ### 方式二（从 Release 安装包部署）
 ### 第 1 步：到 [Release 下载页](https://github.com/chuanwen168/jiayuektv-go/releases) 下载对应版本项目 zip 包（x86 飞牛选 ktvhome-linux-amd64.zip），把项目包上传到 NAS
