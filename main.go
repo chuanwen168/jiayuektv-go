@@ -22,9 +22,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"ktvhome/internal/admin"
+	"ktvhome/internal/binpath"
 	"ktvhome/internal/config"
 	"ktvhome/internal/db"
 	"ktvhome/internal/hls"
@@ -44,6 +46,10 @@ var (
 
 	safeFileRe = regexp.MustCompile(`^[\w.-]+$`)
 	digitsRe   = regexp.MustCompile(`^\d+$`)
+
+	// voiceMu / voiceLastSwitch：音轨切换防回环去重状态（见 handleVoiceSwitch 注释）。
+	voiceMu         sync.Mutex
+	voiceLastSwitch = map[string]time.Time{}
 )
 
 func main() {
@@ -193,6 +199,9 @@ func registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/player/state", handlePlayerState)
 	mux.HandleFunc("GET /api/player/settings", handlePlayerSettingsGet)
 	mux.HandleFunc("PUT /api/player/settings", handlePlayerSettingsSet)
+
+	// ---------- 预载预热（安卓 TV 播放超过 30s 后预热下一首转码缓存） ----------
+	mux.HandleFunc("POST /api/preload", handlePreload)
 
 	// ---------- TV 滚动欢迎语 ----------
 	// GET /api/welcome（公开，TV 端读取）；PUT /api/admin/welcome（后台设置）
@@ -435,7 +444,10 @@ func handleDeleteSong(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := db.DB.Exec("DELETE FROM songs WHERE id = ?", id); err != nil {
+	// 必须走事务级联删除：queue/history/favorites/song_artists 引用 songs 的外键
+	// 会挡住直接 DELETE（点过/唱过的歌 queue、song_artists 里必有记录），
+	// 不清理关联表会导致外键约束失败、删除接口 500。
+	if err := scanner.DeleteSongAndRefs(id); err != nil {
 		logger.Error("API", "删除歌曲失败: "+err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "删除失败"})
 		return
@@ -859,7 +871,44 @@ func handleVoiceSwitch(w http.ResponseWriter, r *http.Request) {
 	case "stereo":
 		modeName = "双声道(Web Audio 声道复制)"
 	}
+
+	// 防回环去重：同一首歌切到同一目标音轨在 800ms 内重复收到时直接忽略。
+	// 原因：服务端把切音轨指令广播给全部播放端后，各播放端（安卓 TV / 网页 TV）
+	// 收到广播会本地执行切换，同时部分客户端还会把切换结果"上报"回 /api/voice/switch
+	// ——上报再次触发广播 → 播放端再次收到 → 再次上报…… 形成无限制疯狂切伴奏死循环。
+	// 旧版服务端只记日志不广播，因此旧客户端连旧服务端正常；新版服务端加了广播后，
+	// 旧客户端连新版服务端也会被广播带进循环。这里对"同歌同目标"的重复请求去重，
+	// 一次广播只放行一次，从服务端根上打断循环；原唱/伴唱来回互切（目标不同）不受影响。
+	voiceMu.Lock()
+	now := time.Now()
+	key := fmt.Sprintf("%v|%s", body.SongID, body.To)
+	dup := false
+	if last, ok := voiceLastSwitch[key]; ok && now.Sub(last) < 800*time.Millisecond {
+		dup = true
+	} else {
+		voiceLastSwitch[key] = now
+	}
+	// 限制去重表大小（超过 2048 条时清理 5 秒前的旧记录，避免长期运行内存增长）。
+	if len(voiceLastSwitch) > 2048 {
+		for k, t := range voiceLastSwitch {
+			if now.Sub(t) > 5*time.Second {
+				delete(voiceLastSwitch, k)
+			}
+		}
+	}
+	voiceMu.Unlock()
+	if dup {
+		logger.Info("VOICE", fmt.Sprintf("忽略重复音轨切换请求(防回环): %s -> %s (方式: %s)", songTag, toName, modeName))
+		writeOK(w, map[string]bool{"ok": true})
+		return
+	}
+
 	logger.Info("VOICE", fmt.Sprintf("切换音轨: %s -> %s (方式: %s)", songTag, toName, modeName))
+	// 广播控制消息给 TV 播放端（网页 /tv/ 与安卓 TV 均监听 WS control 消息）。
+	// 此前只写日志不广播，导致手机端/网页端点「切音轨」时播放端收不到指令、切换无效。
+	if msg, e := json.Marshal(map[string]any{"type": "control", "action": "voice", "to": body.To, "song_id": body.SongID}); e == nil {
+		hub.Broadcast(msg)
+	}
 	writeOK(w, map[string]bool{"ok": true})
 }
 
@@ -1109,6 +1158,39 @@ func handlePlayerState(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ---------- 预载预热 ----------
+
+// handlePreload 触发某首歌的 HLS 转码预热（不进入队列、不改变播放状态）。
+// 安卓 TV 端播放超过 30s 后调用，把下一首要播的歌提前转码，切歌时秒开。
+// h.Ensure 内部有"同一首歌只启动一个后台转码任务"的去重，重复调用无副作用；
+// 转码为渐进式，接口立即返回 master.m3u8 路径。
+func handlePreload(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SongID int64 `json:"song_id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.SongID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 song_id"})
+		return
+	}
+	song, err := getSongByID(body.SongID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "歌曲不存在"})
+		return
+	}
+	if !fileExists(song.Filepath) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "歌曲文件不存在"})
+		return
+	}
+	if _, err := h.Ensure(song); err != nil {
+		logger.Error("PRELOAD", fmt.Sprintf("预热转码失败: id=%d \"%s\": %s", song.ID, song.Filename, err.Error()))
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "预热失败"})
+		return
+	}
+	logger.Info("PRELOAD", fmt.Sprintf("已点队列后台预热转码已触发(id=%d \"%s\")", song.ID, titleOrFilename(song)))
+	writeOK(w, map[string]any{"ok": true, "song_id": song.ID})
+}
+
 // ---------- TV 滚动欢迎语 ----------
 
 // tickerWelcomeKey 欢迎语设置键（settings 表）。
@@ -1191,10 +1273,44 @@ func handleHLSMaster(w http.ResponseWriter, r *http.Request) {
 	}
 	logger.Info("HLS", fmt.Sprintf("请求播放 master.m3u8: id=%d \"%s\"", song.ID, titleOrFilename(song)))
 
+	// 安卓 4.4 MediaPlayer 无多音轨切换 API：?track=N 时动态输出单音轨 master
+	//（video.m3u8 + audioN.m3u8），播放器 reload 该地址即可切换原唱/伴唱。
+	track := int64(-1)
+	if v := r.URL.Query().Get("track"); v != "" {
+		if t, e := strconv.ParseInt(v, 10, 64); e == nil && t >= 0 {
+			track = t
+		}
+	}
+	if track >= 0 {
+		tc := int64(1)
+		if song.AudioTracks != nil && *song.AudioTracks >= 1 {
+			tc = *song.AudioTracks
+		}
+		if track >= tc {
+			track = -1 // 越界回退默认多音轨
+		}
+	}
+
 	m3u8Path, err := h.Ensure(song)
 	if err != nil {
 		logger.Error("HLS", fmt.Sprintf("master.m3u8 生成失败: id=%d \"%s\": %s", song.ID, song.Filename, err.Error()))
 		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if track >= 0 {
+		name := "原唱"
+		if track == 1 {
+			name = "伴唱"
+		} else if track >= 2 {
+			name = fmt.Sprintf("音轨%d", track+1)
+		}
+		body := fmt.Sprintf("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"%s\",DEFAULT=YES,AUTOSELECT=YES,URI=\"audio%d.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=8000000,AUDIO=\"aud\"\nvideo.m3u8\n", name, track)
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Header().Set("Cache-Control", "no-store")
+		// 显式 Content-Length：避免 Go 对响应自动使用 chunked 传输编码（晶晨 amffmpeg 解析 chunked 崩溃）。
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, body)
 		return
 	}
 	serveFileWithHeaders(w, m3u8Path, "application/vnd.apple.mpegurl", "no-store")
@@ -1254,6 +1370,12 @@ func serveFileWithHeaders(w http.ResponseWriter, path, contentType, cacheControl
 	if cacheControl != "" {
 		w.Header().Set("Cache-Control", cacheControl)
 	}
+	if st, err := f.Stat(); err == nil {
+		w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.CopyN(w, f, st.Size()) // 严格按 Content-Length 发送，避免渐进式 m3u8 增长导致的响应不一致
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, f)
 }
@@ -1274,6 +1396,30 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 	trackParam := r.URL.Query().Get("track")
 	hasMultiTrack := song.AudioTracks != nil && *song.AudioTracks >= 2
 
+	// 起始播放位置（毫秒）：直连模式切音轨续播用，ffmpeg 从该位置开始转码输出。
+	startMs := int64(0)
+	if v, err := strconv.ParseInt(r.URL.Query().Get("start"), 10, 64); err == nil && v > 0 {
+		startMs = v
+	}
+
+	// .strm 网盘占位文件：本地没有实体视频，源文件直传/Range 均不适用，
+	// 一律用 ffmpeg 以远程地址现场重新封装输出。
+	if strings.EqualFold(filepath.Ext(song.Filepath), ".strm") {
+		src := scanner.ResolveInputPath(song.Filepath)
+		track := int64(0)
+		if v, err := strconv.ParseInt(trackParam, 10, 64); err == nil {
+			track = v
+		}
+		if track < 0 {
+			track = 0
+		}
+		if hasMultiTrack && track > *song.AudioTracks-1 {
+			track = *song.AudioTracks - 1
+		}
+		streamSingleTrack(w, r, src, track, startMs)
+		return
+	}
+
 	// 多音轨 + 指定音轨：ffmpeg 现场重新封装单音轨流（不支持 Range）。
 	if trackParam != "" && hasMultiTrack {
 		track := int64(0)
@@ -1287,7 +1433,7 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 		if track > maxTrack {
 			track = maxTrack
 		}
-		streamSingleTrack(w, r, song.Filepath, track)
+		streamSingleTrack(w, r, song.Filepath, track, startMs)
 		return
 	}
 
@@ -1295,17 +1441,32 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 	serveRange(w, r, song.Filepath, "video/mp4")
 }
 
-func streamSingleTrack(w http.ResponseWriter, r *http.Request, filepath string, track int64) {
-	cmd := exec.Command("ffmpeg",
-		"-loglevel", "error",
+func streamSingleTrack(w http.ResponseWriter, r *http.Request, filepath string, track int64, startMs int64) {
+	args := []string{"-loglevel", "error"}
+	if startMs > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(float64(startMs)/1000, 'f', 3, 64))
+	}
+	args = append(args,
 		"-i", filepath,
 		"-map", "0:v:0",
-		"-map", fmt.Sprintf("0:a:%d", track),
-		"-c", "copy",
+		"-map", fmt.Sprintf("0:a:%d", track))
+	if startMs > 0 {
+		// 精确续播：部分源视频（MKV）关键帧极少，-ss 快速 seek + -c copy 会输出
+		// “孤立 I 帧 + 无参考 P 帧”，播放器无法解码后续画面（卡死/黑屏/位置回跳）。
+		// 视频轻转码强制正常 GOP（约 1s 一个关键帧），从请求位置精确起播。
+		args = append(args,
+			"-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+			"-g", "30", "-keyint_min", "30", "-sc_threshold", "0",
+			"-c:a", "copy")
+	} else {
+		args = append(args, "-c", "copy")
+	}
+	args = append(args,
 		"-movflags", "frag_keyframe+empty_moov+faststart",
 		"-f", "mp4",
 		"pipe:1",
 	)
+	cmd := exec.Command(binpath.Resolve("ffmpeg"), args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)

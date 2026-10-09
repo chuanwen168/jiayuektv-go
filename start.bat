@@ -2,7 +2,7 @@
 cd /d %~dp0
 
 set ADMIN_PASSWORD=admin888
-set PORT=8080
+set PORT=8086
 set DATA_DIR=%CD%\data
 set MV_DIR=%CD%\mv
 set MV_NET_DIR=%CD%\mv-net

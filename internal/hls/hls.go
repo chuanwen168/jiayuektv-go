@@ -27,6 +27,7 @@ import (
 	"ktvhome/internal/binpath"
 	"ktvhome/internal/db"
 	"ktvhome/internal/logger"
+	"ktvhome/internal/scanner"
 )
 
 // SegTime 分片时长（秒），只是建议值，ffmpeg 会在最近的关键帧处切割。
@@ -542,9 +543,14 @@ func trackCount(song *db.Song) int64 {
 }
 
 // buildHLS 并发构建视频轨与全部音频轨，全部成功后才写 .complete 标记。
+// .strm 网盘占位文件在此统一解析为实际 URL/路径作为 ffmpeg 输入。
 func (h *HLS) buildHLS(song *db.Song, dir string) error {
 	tc := trackCount(song)
 	songTag := fmt.Sprintf(`[歌曲 id=%d "%s"]`, song.ID, titleOrFilename(song))
+	src := scanner.ResolveInputPath(song.Filepath)
+	if src != song.Filepath {
+		logger.Info("TRANSCODE", fmt.Sprintf("%s 为网盘 strm 曲目，使用远程地址转码: %s", songTag, src))
+	}
 	t0 := time.Now()
 
 	logger.Info("TRANSCODE", fmt.Sprintf("%s 开始转码，共 %d 条音轨%s", songTag, tc, map[bool]string{true: "（1=原唱, 2=伴唱）", false: ""}[tc >= 2]))
@@ -555,7 +561,7 @@ func (h *HLS) buildHLS(song *db.Song, dir string) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := h.buildVideoRendition(song.Filepath, dir, songTag); err != nil {
+		if err := h.buildVideoRendition(src, dir, songTag); err != nil {
 			errCh <- err
 		}
 	}()
@@ -565,7 +571,7 @@ func (h *HLS) buildHLS(song *db.Song, dir string) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := h.buildAudioRendition(song.Filepath, dir, track, songTag); err != nil {
+			if err := h.buildAudioRendition(src, dir, track, songTag); err != nil {
 				errCh <- err
 			}
 		}()

@@ -65,18 +65,20 @@ body.fs #controlbar{display:none}
 
 /* 正在播放/下一曲 顶部滚动条：KTV 风格，全宽从最右滚到最左，10~20 秒一次 */
 #ticker{
-  position:fixed;top:12px;left:0;width:100%;height:38px;overflow:hidden;
+  position:fixed;top:1.5vh;left:0;width:100%;height:6vh;overflow:hidden;
   z-index:40;pointer-events:none;white-space:nowrap;display:none;
-  background:rgba(8,6,20,.25);
-  border-top:1px solid rgba(255,255,255,.04);
-  border-bottom:1px solid rgba(255,255,255,.04)}
+  background:linear-gradient(90deg,rgba(10,8,25,.68),rgba(35,18,60,.58) 35%,rgba(10,8,25,.68));
+  border-top:1px solid rgba(199,54,247,.45);
+  border-bottom:1px solid rgba(199,54,247,.45);
+  box-shadow:0 2px 14px rgba(0,0,0,.55)}
 #ticker.show{display:block}
 #ticker-inner{
-  height:38px;line-height:38px;padding:0 24px;font-size:18px;font-weight:500;
-  letter-spacing:.5px;color:rgba(240,242,255,.8);white-space:nowrap}
-#ticker-inner .tk-playing{color:rgba(255,224,138,.9)}
-#ticker-inner .tk-next{color:rgba(179,255,214,.9)}
-#ticker-inner .tk-welcome{color:rgba(255,236,180,.95);letter-spacing:1.5px;font-weight:600}
+  height:6vh;line-height:6vh;padding:0 2vw;font-size:2.7vh;font-weight:600;
+  letter-spacing:.5px;color:#fff;white-space:nowrap;
+  text-shadow:0 1px 3px rgba(0,0,0,.95),0 0 10px rgba(0,0,0,.6)}
+#ticker-inner .tk-playing{color:#ffe08a}
+#ticker-inner .tk-next{color:#7dffb0}
+#ticker-inner .tk-welcome{color:#fff3c4;letter-spacing:1.5px;font-weight:700}
 /* KTV 滚动：从屏幕最右进、最左出，跑完一次即止 */
 #ticker-inner.go{animation:tickerRun 25s linear forwards}
 @keyframes tickerRun{

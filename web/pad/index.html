@@ -143,6 +143,23 @@ body{
 .ak:active{background:rgba(199,54,247,.38);transform:scale(.94)}
 .ak-clr{grid-column:span 3;color:var(--pink);font-size:12px}
 
+/* ===== 左右分栏（歌名点歌 / 歌手点歌：列表在左、字母索引竖排在右） ===== */
+.ltr-body{overflow:hidden !important;padding-bottom:18px}
+.ltr{display:flex;gap:16px;height:100%;align-items:stretch}
+.ltr-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
+.ltr-scroll{flex:1;overflow-y:auto;min-height:0;padding-right:8px;scrollbar-width:thin;scrollbar-color:#3a2a5c transparent}
+.ltr-side{
+  width:190px;flex-shrink:0;display:flex;flex-direction:column;gap:9px;
+  background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.09);
+  border-radius:16px;padding:12px 10px}
+.ltr-side .search-box{padding:9px 10px;margin-bottom:0;flex-shrink:0;border-radius:12px}
+.ltr-side .search-box input,.ltr-side .ad-txt{font-size:14px}
+.ltr-side .ak-toggle{padding:5px 10px;font-size:11px}
+/* 右侧字母：多行多列网格（每行 5 个，参考样式：A-E/F-J/K-O/P-T/U-Y/Z+删除） */
+.ltr-side .alpha-keys.side{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:0;align-content:start}
+.ltr-side .alpha-keys.side .ak{height:40px;border-radius:8px;font-size:15px;padding:0}
+.ltr-side .alpha-keys.side .ak.ak-clr{grid-column:span 2;font-size:12px}
+
 /* 歌曲列表 */
 .song-list{display:flex;flex-direction:column;gap:10px}
 .song-card{
@@ -346,30 +363,38 @@ input[type=range].eq-slider::-moz-range-thumb{width:20px;height:20px;border-radi
   </div>
 </div>
 
-<!-- ====== 歌名点歌 ====== -->
+<!-- ====== 歌名点歌（列表在左、字母索引在右） ====== -->
 <div class="mfull" id="page-order">
   <div class="mfull-head"><div class="mfull-back" onclick="closeMPage('page-order')">‹ 返回</div><div class="mfull-title">🎵 歌名点歌</div></div>
-  <div class="mfull-body">
-    <div id="od-alpha"></div>
-    <div id="order-list" class="song-list"></div>
-    <div class="pager" id="order-pager">
-      <button onclick="orderPage(-1)" id="order-prev">上一页</button>
-      <span id="order-pg-info">1/1</span>
-      <button onclick="orderPage(1)" id="order-next">下一页</button>
+  <div class="mfull-body ltr-body">
+    <div class="ltr">
+      <div class="ltr-main">
+        <div class="ltr-scroll"><div id="order-list" class="song-list"></div></div>
+        <div class="pager" id="order-pager">
+          <button onclick="orderPage(-1)" id="order-prev">上一页</button>
+          <span id="order-pg-info">1/1</span>
+          <button onclick="orderPage(1)" id="order-next">下一页</button>
+        </div>
+      </div>
+      <div class="ltr-side" id="od-alpha-side"></div>
     </div>
   </div>
 </div>
 
-<!-- ====== 歌手点歌 ====== -->
+<!-- ====== 歌手点歌（歌星网格在左、字母索引在右） ====== -->
 <div class="mfull" id="page-artists">
   <div class="mfull-head"><div class="mfull-back" onclick="closeMPage('page-artists')">‹ 返回</div><div class="mfull-title">🎤 歌手点歌</div></div>
-  <div class="mfull-body">
-    <div id="ar-alpha"></div>
-    <div class="ag-grid" id="artist-grid"></div>
-    <div class="pager" id="artist-pager">
-      <button onclick="artistPage(-1)" id="artist-prev">上一页</button>
-      <span id="artist-pg-info">1/1</span>
-      <button onclick="artistPage(1)" id="artist-next">下一页</button>
+  <div class="mfull-body ltr-body">
+    <div class="ltr">
+      <div class="ltr-main">
+        <div class="ltr-scroll"><div class="ag-grid" id="artist-grid"></div></div>
+        <div class="pager" id="artist-pager">
+          <button onclick="artistPage(-1)" id="artist-prev">上一页</button>
+          <span id="artist-pg-info">1/1</span>
+          <button onclick="artistPage(1)" id="artist-next">下一页</button>
+        </div>
+      </div>
+      <div class="ltr-side" id="ar-alpha-side"></div>
     </div>
   </div>
 </div>
@@ -703,7 +728,16 @@ function alphaPanelHTML(prefix){
   <div class="alpha-keys" id="${prefix}-keys">${letters}</div>
   <div class="alpha-keys" id="${prefix}-keys-num" style="display:none">${nums}</div>`;
 }
-['od','ar','hs','fv'].forEach(p=>{ const el=document.getElementById(`${p}-alpha`); if(el) el.innerHTML=alphaPanelHTML(p); });
+/** 右侧竖排字母面板（歌名/歌手点歌用）：搜索显示 + A-Z 竖排 + 删除，123 可切数字。 */
+function alphaPanelSideHTML(prefix){
+  const letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ".split('').map(l=>`<div class="ak" onclick="handleAlpha('${prefix}','${l}')">${l}</div>`).join('')+`<div class="ak ak-clr" onclick="handleAlpha('${prefix}','DEL')">删除</div>`;
+  const nums="1234567890".split('').map(n=>`<div class="ak" onclick="handleAlpha('${prefix}','${n}')">${n}</div>`).join('')+`<div class="ak ak-clr" onclick="handleAlpha('${prefix}','DEL')">删除</div>`;
+  return `<div class="search-box"><span>🔍</span><span class="ad-txt" id="${prefix}-keys-txt">${ALPHA_PLACEHOLDER[prefix]}</span><button class="ak-toggle" id="${prefix}-toggle" onclick="toggleAlphaMode('${prefix}')">123</button></div>
+  <div class="alpha-keys side" id="${prefix}-keys">${letters}</div>
+  <div class="alpha-keys side" id="${prefix}-keys-num" style="display:none">${nums}</div>`;
+}
+['od','ar'].forEach(p=>{ const el=document.getElementById(`${p}-alpha-side`); if(el) el.innerHTML=alphaPanelSideHTML(p); });
+['hs','fv'].forEach(p=>{ const el=document.getElementById(`${p}-alpha`); if(el) el.innerHTML=alphaPanelHTML(p); });
 function toggleAlphaMode(prefix){
   const letters=document.getElementById(`${prefix}-keys`), nums=document.getElementById(`${prefix}-keys-num`), btn=document.getElementById(`${prefix}-toggle`);
   if(!letters||!nums||!btn)return;

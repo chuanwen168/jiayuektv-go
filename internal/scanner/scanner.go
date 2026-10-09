@@ -23,9 +23,39 @@ import (
 )
 
 // VideoExt 支持的视频格式白名单。
+// .strm 为网盘流媒体占位文件（文本内容为一行远程 URL），同样视为曲库文件。
 var VideoExt = map[string]bool{
 	".mp4": true, ".mkv": true, ".avi": true, ".flv": true,
-	".mov": true, ".webm": true, ".mpg": true,
+	".mov": true, ".webm": true, ".mpg": true, ".strm": true,
+}
+
+// ResolveInputPath 把曲库文件路径解析为 ffmpeg/ffprobe 可用的输入：
+//   - .strm 文件：读取其文本内容（通常是一行 http/https 直链或本地路径），
+//     返回去掉首尾空白后的 URL/路径；读取失败或内容为空时返回原路径（由后续
+//     探测/转码报错自然暴露）。
+//   - 其它视频文件：原样返回。
+//
+// strm 文件本身很小，每次读取开销可忽略，不需要缓存。
+func ResolveInputPath(p string) string {
+	if !strings.EqualFold(filepath.Ext(p), ".strm") {
+		return p
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		logger.Warn("SCAN", "读取 strm 文件失败("+p+"): "+err.Error())
+		return p
+	}
+	content := strings.TrimSpace(string(b))
+	if content == "" {
+		logger.Warn("SCAN", "strm 文件内容为空("+p+")")
+		return p
+	}
+	// 兼容多行文本：取第一行非空内容为实际地址。
+	if i := strings.IndexByte(content, '\n'); i >= 0 {
+		content = strings.TrimSpace(content[:i])
+	}
+	logger.Info("SCAN", "strm 解析成功("+p+") -> "+content)
+	return content
 }
 
 // ScanResult 是 /api/scan 的响应体。Error 仅在异常时非空
@@ -159,8 +189,10 @@ func (s *Scanner) rootSources(root, kind, netPrefix string, defaultEnabled bool,
 }
 
 // ProbeAudioTracks 用 ffprobe 读取音频流数量，失败按单音轨处理。
-func ProbeAudioTracks(filepath string) int64 {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+// .strm 输入会先解析为实际 URL/路径再交给 ffprobe。
+func ProbeAudioTracks(p string) int64 {
+	src := ResolveInputPath(p)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	out, err := execCommand(ctx, binpath.Resolve("ffprobe"),
@@ -168,13 +200,13 @@ func ProbeAudioTracks(filepath string) int64 {
 		"-select_streams", "a",
 		"-show_entries", "stream=index",
 		"-of", "csv=p=0",
-		filepath,
+		src,
 	)
 	if err != nil {
 		// ffprobe 不可用（如 gyan.dev essentials 版 ffmpeg 不含 ffprobe）时，
 		// 回退用 ffmpeg -i 解析 stderr 中的音频流数量，避免多音轨被误判为单音轨。
-		logger.Warn("SCAN", "ffprobe 不可用("+filepath+"): "+err.Error()+"，尝试 ffmpeg 回退探测")
-		return probeWithFFmpeg(filepath)
+		logger.Warn("SCAN", "ffprobe 不可用("+src+"): "+err.Error()+"，尝试 ffmpeg 回退探测")
+		return probeWithFFmpeg(src)
 	}
 	count := 0
 	for _, line := range strings.Split(string(out), "\n") {
@@ -313,48 +345,67 @@ func SplitArtists(artist string) []string {
 }
 
 // ParseFilename 解析文件名（不含路径）为歌手、歌名、语种、风格。
-// 支持格式：
+// 兼容格式：
 //
-//	歌手 - 歌名.mp4               （空格-空格分隔，歌手内可含 &）
-//	歌手-歌名.mkv                （无空格 - 分隔）
-//	歌手-歌名-语种-风格.mp4       （尾部语种/风格，如 郭静-心墙-国语-流行歌曲.mkv）
-//	歌手&歌手2 - 歌名.mkv         （多歌手）
+//	歌手 - 歌名.mp4                 郭静 - 心墙
+//	歌手-歌名.mkv                  胡歌-逍遥叹
+//	歌手-歌名-语种-风格.mp4          郭静-心墙-国语-流行歌曲.mkv
+//	歌手-歌名 - 国语 - 怀旧.mkv      卓依婷-花好月圆 - 国语 - 怀旧
+//	歌手-歌名-语种.mkv             胡歌-逍遥叹-国语
+//	歌手1&歌手2 - 歌名.mkv          高进&小沈阳 - 我的好兄弟
 //
-// 语种/风格仅在尾部段**同时命中**语种集与风格集时才提取，避免误拆歌名中的 "-"。
+// 规则：先把文件名按空格分隔符 " - " 切成"块"，再把每块按无空格 "-"
+// 切成"单元"，得到单元序列——第一个单元是歌手；尾部若命中"语种-风格"、
+// 仅语种或仅风格则提取；其余单元拼接为歌名。精确匹配避免误拆歌名。
 func ParseFilename(filename string) (artist, title, language, genre string) {
 	base := filepath.Base(filename)
 	base = strings.TrimSuffix(base, filepath.Ext(base))
 
-	// 第一步：切出歌手与歌名（优先空格-空格，其次 -，最后 _）。
-	title = base
-	for _, sep := range []string{" - ", "-", "_"} {
-		if idx := strings.Index(base, sep); idx >= 0 {
-			a := strings.TrimSpace(base[:idx])
-			t := strings.TrimSpace(base[idx+len(sep):])
-			if a != "" && t != "" {
-				artist, title = a, t
-				break
+	var units []string
+	for _, block := range strings.Split(base, " - ") {
+		for _, u := range strings.Split(block, "-") {
+			u = strings.TrimSpace(u)
+			if u != "" {
+				units = append(units, u)
 			}
 		}
 	}
-	if artist == "" {
-		artist = "未知歌手"
+	if len(units) == 0 {
+		return "未知歌手", "未知歌名", "", ""
+	}
+	artist = units[0]
+	rest := units[1:]
+	if len(rest) == 0 {
+		return artist, "未知歌名", "", ""
 	}
 
-	// 第二步：从歌名尾部提取 "-语种-风格"。
-	// 支持 歌名-语种-风格（三段）与 语种-风格（两段、无歌名）两种尾部。
-	parts := strings.Split(title, "-")
-	if len(parts) >= 2 {
-		last := strings.TrimSpace(parts[len(parts)-1])
-		prev := strings.TrimSpace(parts[len(parts)-2])
-		lang, langOK := matchLanguage(prev)
-		gen, genOK := matchGenre(last)
-		if langOK && genOK {
-			language = lang
-			genre = gen
-			title = strings.TrimSpace(strings.Join(parts[:len(parts)-2], "-"))
+	// 尾部语种/风格提取（精确匹配）：
+	//  1) 末尾两段命中 语种-风格
+	//  2) 末尾一段单独命中 语种
+	//  3) 末尾一段单独命中 风格
+	extracted := 0
+	if len(rest) >= 2 {
+		if l, ok := matchLanguage(rest[len(rest)-2]); ok {
+			if g, ok2 := matchGenre(rest[len(rest)-1]); ok2 {
+				language, genre = l, g
+				extracted = 2
+			}
 		}
 	}
+	if extracted == 0 {
+		if l, ok := matchLanguage(rest[len(rest)-1]); ok {
+			language = l
+			extracted = 1
+		} else if g, ok := matchGenre(rest[len(rest)-1]); ok {
+			genre = g
+			extracted = 1
+		}
+	}
+	if extracted > 0 {
+		rest = rest[:len(rest)-extracted]
+	}
+
+	title = strings.Join(rest, "-")
 	if title == "" {
 		title = "未知歌名"
 	}
@@ -576,22 +627,27 @@ func (s *Scanner) backfillAudioTracks() {
 //   - 规范化后重复的记录（同一文件在默认根递归时期与子目录来源各入一次库）
 //     只保留一条：优先保留本来就是正斜杠规范化的记录，其次保留较小 id；
 //   - 只处理属于启用来源管辖范围的记录：有效集合之外的 filename，若前缀匹配
-//     任一启用来源则判定为已缺失并清理；不匹配任何启用来源的记录（属于
-//     未启用/已移除来源）一律保留。
+//     任一启用来源则判定为已缺失并清理；
+//   - 网盘（/mv-net）曲目特殊规则：网盘来源被移除挂载（来源目录消失或当前
+//     不可访问）时，其曲目记录一并清理——网盘歌曲没有本地实体文件，挂载移除
+//     即代表不可用；本地来源目录不可访问时仍保留记录（防误删未挂载的本地曲库）。
+//   - 来源目录完全不可发现（DiscoverSources 不再列出）时，按 filename 特征
+//     识别网盘曲目（"net/…" 前缀或首目录段以 "_net" 结尾）并清理，其余保留。
 func (s *Scanner) removeMissing(validSet map[string]bool, sources []Source) int {
 	// 来源前缀规则：Name="" 的默认来源用空串表示"无前缀根文件"；
-	// rootPath 用于判断来源目录当前是否可访问（不可访问时保留记录防误删）。
+	// rootPath 用于判断来源目录当前是否可访问；kind 区分本地/网盘删除策略。
 	type prefixRule struct {
 		prefix   string
 		root     bool   // 默认根（无前缀），只匹配不含 "/" 的根级 filename
 		rootPath string // 来源根路径
+		kind     string // local | net
 	}
 	var rules []prefixRule
 	for _, src := range sources {
 		if src.Name == "" {
-			rules = append(rules, prefixRule{prefix: "", root: true, rootPath: src.Root})
+			rules = append(rules, prefixRule{prefix: "", root: true, rootPath: src.Root, kind: src.Kind})
 		} else {
-			rules = append(rules, prefixRule{prefix: src.Name + "/", rootPath: src.Root})
+			rules = append(rules, prefixRule{prefix: src.Name + "/", rootPath: src.Root, kind: src.Kind})
 		}
 	}
 	belongsToEnabled := func(filename string) *prefixRule {
@@ -633,7 +689,7 @@ func (s *Scanner) removeMissing(validSet map[string]bool, sources []Source) int 
 	normSeen := make(map[string]int64) // 规范化 filename -> 保留的记录 id
 	normFilenames := make(map[int64]string)
 	del := func(id int64) {
-		if err := deleteSongAndRefs(id); err != nil {
+		if err := DeleteSongAndRefs(id); err != nil {
 			logger.Error("SCAN", "曲库扫描-删除已缺失曲目失败(id="+itoa(id)+"): "+err.Error())
 			return
 		}
@@ -669,10 +725,22 @@ func (s *Scanner) removeMissing(validSet map[string]bool, sources []Source) int 
 		}
 		rule := belongsToEnabled(key)
 		if rule == nil {
-			// 不属于任何已知来源（来源目录已被移除/未发现）：保留，防误删。
+			// 来源目录已从发现结果中消失（被移除挂载/不再挂载）。
+			// 网盘曲目按 filename 特征识别并清理；其它记录保留，防误删。
+			if isNetFilename(key) {
+				logger.Info("SCAN", "清理已移除网盘来源的曲目: "+key)
+				del(r.id)
+			}
 			continue
 		}
 		if _, err := os.Stat(rule.rootPath); err != nil {
+			if rule.kind == "net" {
+				// 网盘来源当前不可访问（挂载被移除/暂离线）：网盘歌曲无本地实体，
+				// 不可用即清理。
+				logger.Info("SCAN", "清理不可访问网盘来源的曲目: "+key)
+				del(r.id)
+				continue
+			}
 			// 来源目录当前不可访问（未挂载/暂离线）：保留，防误删。
 			logger.Warn("SCAN", fmt.Sprintf("来源目录不可访问(%s)，保留曲目记录: %s", rule.rootPath, key))
 			continue
@@ -683,9 +751,24 @@ func (s *Scanner) removeMissing(validSet map[string]bool, sources []Source) int 
 	return removed
 }
 
-// deleteSongAndRefs 在单个事务中删除歌曲及其所有关联引用
-// （queue 对 songs 有真实外键，done 状态的队列记录会挡住删除，必须一并清理）。
-func deleteSongAndRefs(id int64) error {
+// isNetFilename 从 filename 判断是否属于网盘曲库（用于网盘来源被移除挂载、
+// DiscoverSources 不再返回该来源时的清理判定）：
+//   - 网盘默认根来源的曲目前缀为 "net/"
+//   - 与本地子目录重名时网盘子目录被命名为 "<目录>_net"，曲目前缀为 "<目录>_net/"
+func isNetFilename(filename string) bool {
+	if strings.HasPrefix(filename, "net/") {
+		return true
+	}
+	if i := strings.IndexByte(filename, '/'); i > 0 {
+		return strings.HasSuffix(filename[:i], "_net")
+	}
+	return false
+}
+
+// DeleteSongAndRefs 在单个事务中删除歌曲及其所有关联引用
+// （queue 对 songs 有真实外键，done 状态的队列记录会挡住删除，必须一并清理；
+// song_artists 亦有外键引用，删除前必须先行清理）。
+func DeleteSongAndRefs(id int64) error {
 	tx, err := db.DB.Begin()
 	if err != nil {
 		return err
