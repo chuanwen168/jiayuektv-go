@@ -141,8 +141,8 @@ nano docker-compose.yml
 ```yaml
 services:
   jiayue-ktv:
-    image: ghcr.io/chuanwen168/jiayuektv-go:1.0.3   # 海外源；想永远用最新版可改成 :latest
-    # image: ccr.ccs.tencentyun.com/chuanwen168/jiayuektv-go:1.0.3   # 国内源（腾讯云），任选其一
+    image: ghcr.io/chuanwen168/jiayuektv-go:latest   # 海外源；想用指定版可改成 :指定版本号
+    # image: ccr.ccs.tencentyun.com/chuanwen168/jiayuektv-go:latest   # 国内源（腾讯云），任选其一
     container_name: jiayue-ktv
     restart: unless-stopped
     ports:
