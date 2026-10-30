@@ -263,11 +263,18 @@ select option{color:#000}
       <option value="genre">缺风格</option>
       <option value="track">未探测成功/单音轨</option>
     </select>
+    <select id="lang-sel" onchange="doLangFilter(this.value)">
+      <option value="">语种：全部</option>
+    </select>
+    <select id="genre-sel" onchange="doGenreFilter(this.value)">
+      <option value="">风格：全部</option>
+    </select>
     <div class="scope-toggle" id="scope-toggle">
       <button class="scope-btn active" data-scope="" onclick="doScopeChange('')">全部</button>
       <button class="scope-btn" data-scope="local" onclick="doScopeChange('local')">本地</button>
       <button class="scope-btn" data-scope="network" onclick="doScopeChange('network')">网盘</button>
     </div>
+    <button class="hbtn" id="sel-all-filter-btn" onclick="selectAllFiltered()" title="将当前搜索/筛选条件下的全部歌曲加入选择">✅ 全选当前筛选</button>
     <button class="hbtn" id="batch-open-btn" onclick="openBatchModal()" disabled>🏷️ 批量设置语种/风格</button>
     <button class="hbtn" id="sel-clear-btn" onclick="clearSelection()" disabled>清除选择(<span id="sel-count">0</span>)</button>
   </div>
@@ -309,10 +316,15 @@ select option{color:#000}
 <div id="modal-overlay" onclick="closeModal()">
   <div id="modal" onclick="event.stopPropagation()">
     <h3>✏️ 编辑歌曲信息</h3>
-    <div class="form-row"><label>歌名</label><input id="edit-title" placeholder="歌名"></div>
-    <div class="form-row"><label>歌手</label><input id="edit-artist" placeholder="歌手（多个用 & 分隔）"></div>
-    <div class="form-row"><label>语种</label><input id="edit-language" placeholder="如：国语 / 粤语 / 英语（可留空）"></div>
-    <div class="form-row"><label>风格</label><input id="edit-genre" placeholder="如：流行 / 摇滚 / 民谣（可留空）"></div>
+    <div class="form-row"><label>歌名</label><input id="edit-title" placeholder="歌名" oninput="editFilenamePreview()"></div>
+    <div class="form-row"><label>歌手</label><input id="edit-artist" placeholder="歌手（多个用 & 分隔）" oninput="editFilenamePreview()"></div>
+    <div class="form-row"><label>语种</label><input id="edit-language" placeholder="如：国语 / 粤语 / 英语（可留空）" oninput="editFilenamePreview()"></div>
+    <div class="form-row"><label>风格</label><input id="edit-genre" placeholder="如：流行 / 摇滚 / 民谣（可留空）" oninput="editFilenamePreview()"></div>
+    <div class="form-row"><label>当前文件名</label><div id="edit-filename" style="font-size:12px;color:var(--sub);word-break:break-all;line-height:1.5"></div></div>
+    <div class="form-row" style="margin-bottom:0">
+      <label style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap;margin-bottom:0;font-size:13px;color:var(--text)"><input type="checkbox" id="edit-rename" onchange="editRenameToggle()"> 保存时同步修改文件名（歌手 - 歌名 - 语种 - 风格）</label>
+      <div id="edit-newfilename-box" style="display:none;font-size:12px;color:var(--cyan);margin-top:6px"></div>
+    </div>
     <input type="hidden" id="edit-id">
     <div class="modal-btns">
       <button class="hbtn" onclick="closeModal()">取消</button>
@@ -343,9 +355,17 @@ select option{color:#000}
         <button class="hbtn" onclick="addPreset('genre')">添加预设</button>
       </div>
     </div>
+    <div class="batch-field">
+      <label><input type="checkbox" id="batch-rename" onchange="document.getElementById('batch-preview-box').style.display=this.checked?'block':'none'"> 同步修改文件名（歌手 - 歌名 - 语种 - 风格）</label>
+      <div id="batch-preview-box" style="display:none">
+        <div id="batch-preview-list" style="max-height:180px;overflow-y:auto;font-size:12px;color:var(--sub);text-align:left;background:rgba(255,255,255,.03);border-radius:8px;padding:8px"></div>
+        <div id="batch-preview-refs" style="font-size:12px;color:var(--pink);margin-top:6px"></div>
+      </div>
+    </div>
     <div class="modal-btns">
       <button class="hbtn" onclick="closeBatchModal()">取消</button>
-      <button class="hbtn primary" onclick="applyBatch()">批量应用</button>
+      <button class="hbtn primary" id="batch-confirm-btn" style="display:none" onclick="confirmBatch()">确认执行</button>
+      <button class="hbtn primary" id="batch-apply-btn" onclick="applyBatch()">批量应用</button>
     </div>
   </div>
 </div>
@@ -375,6 +395,8 @@ let totalPages = 1;
 let totalCount = 0;
 let currentFilter = '';
 let currentScope = '';
+let currentLang = '';
+let currentGenre = '';
 let presets = { languages: [], genres: [] };
 let selectedIds = new Set();
 let searchTimer;
@@ -483,9 +505,21 @@ function currentSongsQuery(){
   if(q) params.set('q', q);
   if(currentFilter) params.set('incomplete', currentFilter);
   if(currentScope) params.set('scope', currentScope);
+  if(currentLang) params.set('lang', currentLang);
+  if(currentGenre) params.set('genre', currentGenre);
   params.set('page', currentPage);
   params.set('pageSize', PAGE_SIZE);
   return `/api/songs?${params.toString()}`;
+}
+function currentFilterParams(){
+  const params = new URLSearchParams();
+  const q = document.getElementById('search').value.trim();
+  if(q) params.set('q', q);
+  if(currentFilter) params.set('incomplete', currentFilter);
+  if(currentScope) params.set('scope', currentScope);
+  if(currentLang) params.set('lang', currentLang);
+  if(currentGenre) params.set('genre', currentGenre);
+  return params.toString();
 }
 async function refreshList(){
   const res = await fetch(currentSongsQuery());
@@ -513,6 +547,8 @@ function goPage(p){
   refreshList();
 }
 function doFilterChange(v){ currentFilter = v; currentPage = 1; refreshList(); }
+function doLangFilter(v){ currentLang = v; currentPage = 1; refreshList(); }
+function doGenreFilter(v){ currentGenre = v; currentPage = 1; refreshList(); }
 function doScopeChange(v){ currentScope = v; currentPage = 1; document.querySelectorAll('#scope-toggle .scope-btn').forEach(b=>b.classList.toggle('active', b.dataset.scope===v)); refreshList(); }
 function doSearch(q){
   clearTimeout(searchTimer);
@@ -547,7 +583,7 @@ function render(list){
   const empty = document.getElementById('empty-tip');
   tbody.innerHTML = '';
   empty.style.display = list.length ? 'none' : 'block';
-  empty.textContent = (currentFilter || currentScope || document.getElementById('search').value.trim()) ? '没有符合条件的歌曲' : '暂无歌曲，请先扫描曲库';
+  empty.textContent = (currentFilter || currentScope || currentLang || currentGenre || document.getElementById('search').value.trim()) ? '没有符合条件的歌曲' : '暂无歌曲，请先扫描曲库';
   const startIndex = (currentPage - 1) * PAGE_SIZE;
   list.forEach((s,i)=>{
     const tr = document.createElement('tr');
@@ -597,7 +633,36 @@ function openEdit(id){
   document.getElementById('edit-artist').value = s.artist || '';
   document.getElementById('edit-language').value = s.language || '';
   document.getElementById('edit-genre').value = s.genre || '';
+  document.getElementById('edit-filename').textContent = s.filename || '';
+  document.getElementById('edit-rename').checked = false;
+  document.getElementById('edit-newfilename-box').style.display = 'none';
   document.getElementById('modal-overlay').classList.add('open');
+}
+// 勾选"同步修改文件名"时显示/隐藏新文件名预览；输入变化时联动刷新
+function editRenameToggle(){
+  const box = document.getElementById('edit-newfilename-box');
+  if(document.getElementById('edit-rename').checked){
+    box.style.display = 'block';
+    editFilenamePreview();
+  } else {
+    box.style.display = 'none';
+  }
+}
+function editFilenamePreview(){
+  const box = document.getElementById('edit-newfilename-box');
+  if(!document.getElementById('edit-rename').checked){ box.style.display = 'none'; return; }
+  const title = document.getElementById('edit-title').value.trim();
+  const artist = document.getElementById('edit-artist').value.trim();
+  const lang = document.getElementById('edit-language').value.trim();
+  const genre = document.getElementById('edit-genre').value.trim();
+  const cur = document.getElementById('edit-filename').textContent;
+  const ext = cur && cur.includes('.') ? cur.substring(cur.lastIndexOf('.')) : '.mp4';
+  const parts = [(artist || '未知歌手'), (title || '未知歌名')];
+  if(lang) parts.push(lang);
+  if(genre) parts.push(genre);
+  const newName = parts.join(' - ') + ext;
+  box.textContent = '新文件名：' + newName + (newName === cur ? '（与当前一致）' : '');
+  box.style.display = 'block';
 }
 function closeModal(){ document.getElementById('modal-overlay').classList.remove('open'); }
 async function saveEdit(){
@@ -606,19 +671,35 @@ async function saveEdit(){
   const artist = document.getElementById('edit-artist').value.trim();
   const language = document.getElementById('edit-language').value.trim();
   const genre = document.getElementById('edit-genre').value.trim();
+  const renameFiles = document.getElementById('edit-rename').checked;
   if(!title){ toast('歌名不能为空'); return; }
-  const res = await fetch(`/api/songs/${id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title,artist,language,genre}) });
+  const res = await fetch(`/api/songs/${id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title,artist,language,genre,renameFiles}) });
   if(res.status === 401){ closeModal(); showLogin(); return; }
+  if(!res.ok){ toast('保存失败'); return; }
+  const d = await res.json();
   closeModal();
   const s = allSongs.find(x=>x.id==id);
-  if(s){ s.title=title; s.artist=artist; s.language=language; s.genre=genre; }
+  if(s){ s.title=title; s.artist=artist; s.language=language; s.genre=genre; if(d.filename) s.filename=d.filename; }
   render(allSongs);
-  toast('已保存 ✓');
+  toast(renameFiles && !d.renamed ? '已保存 ✓（文件名未同步：新名已存在或改名失败）' : '已保存 ✓');
 }
 async function delSong(id, btn){
   if(!confirm('确认从曲库移除这首歌？（文件本身不会被删除）')) return;
   const res = await fetch(`/api/songs/${id}`, {method:'DELETE'});
   if(res.status===401){ showLogin(); return; }
+  if(res.status===409){
+    const d = await res.json();
+    const r = d.refs || {};
+    const msg = `这首歌仍被引用：\n点歌队列 ${r.queue||0} 首，历史 ${r.history||0} 次，收藏 ${r.favorites||0} 个。\n\n仍要删除吗？`;
+    if(confirm(msg)){
+      const res2 = await fetch(`/api/songs/${id}?force=1`, {method:'DELETE'});
+      if(res2.status===401){ showLogin(); return; }
+      if(res2.ok){ selectedIds.delete(id); toast('已移除 ✓'); refreshList(); }
+      else{ toast('删除失败'); }
+    }
+    return;
+  }
+  if(!res.ok){ toast('删除失败'); return; }
   selectedIds.delete(id);
   toast('已移除 ✓');
   refreshList();
@@ -644,26 +725,80 @@ function openBatchModal(){
   document.getElementById('batch-set-genre').checked = false;
   document.getElementById('batch-lang-select').disabled = true;
   document.getElementById('batch-genre-select').disabled = true;
+  document.getElementById('batch-rename').checked = false;
+  document.getElementById('batch-preview-box').style.display = 'none';
+  document.getElementById('batch-preview-list').innerHTML = '';
+  document.getElementById('batch-preview-refs').textContent = '';
+  document.getElementById('batch-confirm-btn').style.display = 'none';
+  document.getElementById('batch-apply-btn').textContent = '批量应用';
+  batchPreviewReq = null;
   renderPresetChips();
   document.getElementById('batch-modal-overlay').classList.add('open');
 }
 function closeBatchModal(){ document.getElementById('batch-modal-overlay').classList.remove('open'); }
+let batchPreviewReq = null;
 async function applyBatch(){
   const setLanguage = document.getElementById('batch-set-lang').checked;
   const setGenre = document.getElementById('batch-set-genre').checked;
   if(!setLanguage && !setGenre){ toast('请至少勾选"设置语种"或"设置风格"其中一项'); return; }
   const language = document.getElementById('batch-lang-select').value;
   const genre = document.getElementById('batch-genre-select').value;
+  const rename = document.getElementById('batch-rename').checked;
+  const req = { ids: Array.from(selectedIds), setLanguage, language, setGenre, genre, renameFiles: rename };
   try{
-    const res = await fetch('/api/songs/batch', {
-      method: 'PUT', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ ids: Array.from(selectedIds), setLanguage, language, setGenre, genre }),
-    });
+    if(rename){
+      // 第一步：预览（新文件名/冲突/引用），不落库
+      const res = await fetch('/api/songs/batch', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...req, preview:true}) });
+      if(res.status === 401){ showLogin(); return; }
+      if(!res.ok){ toast('预览失败'); return; }
+      const d = await res.json();
+      batchPreviewReq = req;
+      const box = document.getElementById('batch-preview-list');
+      let html = '';
+      if(d.preview && d.preview.length){
+        html += `<div style="color:var(--cyan);margin-bottom:6px">将修改 ${d.preview.length} 个文件名：</div>` +
+          d.preview.map(p=>`<div style="margin:2px 0">${esc(p.old)} <span style="color:var(--cyan)">→</span> ${esc(p.new)}</div>`).join('');
+      } else {
+        html += '<div style="color:var(--sub)">文件名无需变化</div>';
+      }
+      if(d.conflicts && d.conflicts.length){
+        html += `<div style="color:var(--pink);margin-top:8px">⚠ ${d.conflicts.length} 首的目标文件名已存在，将跳过（仅更新语种/风格）：</div>` +
+          d.conflicts.map(c=>`<div style="margin:2px 0">${esc(c.old)} → <span style="color:var(--pink)">${esc(c.new)}</span></div>`).join('');
+      }
+      box.innerHTML = html;
+      const r = d.refs || {};
+      document.getElementById('batch-preview-refs').textContent =
+        (r.queue ? `⚠ ${r.queue} 首还在点歌队列（含播放中），改名不影响播放 ` : '') +
+        (r.history ? `历史记录 ${r.history} 条 ` : '') +
+        (r.favorites ? `收藏 ${r.favorites} 个` : '');
+      document.getElementById('batch-preview-box').style.display = 'block';
+      document.getElementById('batch-confirm-btn').style.display = 'inline-block';
+      document.getElementById('batch-apply-btn').textContent = '重新预览';
+      return;
+    }
+    // 不改名：直接执行
+    const res = await fetch('/api/songs/batch', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(req) });
     if(res.status === 401){ showLogin(); return; }
     if(!res.ok){ toast('批量设置失败'); return; }
     selectedIds.clear();
     closeBatchModal();
     toast('批量设置完成 ✓');
+    refreshList();
+  }catch(e){ toast('请求失败，请检查网络'); }
+}
+async function confirmBatch(){
+  if(!batchPreviewReq){ return; }
+  try{
+    const res = await fetch('/api/songs/batch', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...batchPreviewReq, preview:false}) });
+    if(res.status === 401){ showLogin(); return; }
+    if(!res.ok){ toast('批量执行失败'); return; }
+    const d = await res.json();
+    selectedIds.clear();
+    closeBatchModal();
+    const parts = [];
+    if(d.renamed) parts.push(`改名 ${d.renamed} 首`);
+    if(d.skipped) parts.push(`跳过 ${d.skipped} 首`);
+    toast(`批量完成 ✓${parts.length ? '（' + parts.join('，') + '）' : ''}`);
     refreshList();
   }catch(e){ toast('请求失败，请检查网络'); }
 }
@@ -677,11 +812,30 @@ async function loadPresets(){
     presets = { languages: d.languages || [], genres: d.genres || [] };
     fillBatchSelect('batch-lang-select', presets.languages);
     fillBatchSelect('batch-genre-select', presets.genres);
+    fillFilterSelect('lang-sel', presets.languages, '语种');
+    fillFilterSelect('genre-sel', presets.genres, '风格');
   }catch(e){}
 }
 function fillBatchSelect(selectId, list){
   const sel = document.getElementById(selectId);
   sel.innerHTML = '<option value="">（清空该字段）</option>' + list.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');
+}
+function fillFilterSelect(selectId, list, label){
+  const sel = document.getElementById(selectId);
+  if(!sel) return;
+  sel.innerHTML = `<option value="">${label}：全部</option>` + list.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');
+}
+async function selectAllFiltered(){
+  try{
+    const res = await fetch(`/api/admin/songs-ids?${currentFilterParams()}`);
+    if(res.status === 401){ showLogin(); return; }
+    if(!res.ok){ toast('全选失败'); return; }
+    const d = await res.json();
+    (d.ids || []).forEach(id => selectedIds.add(id));
+    render(allSongs);
+    updateSelectionUI();
+    toast(`已选择 ${selectedIds.size} 首 ✓`);
+  }catch(e){ toast('请求失败，请检查网络'); }
 }
 function renderPresetChips(){
   const build = (list, type) => list.map(v=>

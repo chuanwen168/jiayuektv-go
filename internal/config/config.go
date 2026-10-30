@@ -19,6 +19,7 @@ type Config struct {
 	AdminPassword      string // 1.2.0：预置管理员密码（仅首次未设密码时生效），默认空
 	SingerDir          string // 1.2.0：歌手头像目录，默认 /singer（图片名=歌手名）
 	NVENCEnabled       string // 1.2.0：NVIDIA NVENC 硬件编码开关，auto|on|off，默认 auto
+	TranscodeConcurrency int // 1.0.4：同时最多允许的 ffmpeg 转码任务数（HLS 转码 + 直连转码共用），默认 3
 }
 
 func Load() *Config {
@@ -33,6 +34,7 @@ func Load() *Config {
 		AdminPassword:      os.Getenv("ADMIN_PASSWORD"),
 		SingerDir:          getEnv("SINGER_DIR", "/singer"),
 		NVENCEnabled:       getEnv("NVENC_ENABLE", "auto"),
+		TranscodeConcurrency: getEnvInt("TRANSCODE_CONCURRENCY", 3),
 	}
 }
 
@@ -40,6 +42,9 @@ func Load() *Config {
 func (c *Config) Resolve() {
 	if c.HLSDir == "" {
 		c.HLSDir = filepath.Join(c.DataDir, "hls")
+	}
+	if c.TranscodeConcurrency < 1 {
+		c.TranscodeConcurrency = 1
 	}
 }
 

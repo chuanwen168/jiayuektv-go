@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>家悦K歌 · 播放端</title>
 <script src="/vendor/hls.min.js"></script>
+<script src="/vendor/qrcode.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
@@ -42,11 +43,42 @@ body{background:#000;color:#fff;font-family:"PingFang SC","Microsoft YaHei",sans
 .qitem .qi{flex:1;min-width:0}
 .qitem .qt{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .qitem .qm{font-size:11px;color:#8a8aad;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.qitem .qops{display:flex;flex-direction:column;gap:4px;flex-shrink:0}
+.qitem .qop{width:26px;height:24px;border-radius:7px;border:1px solid rgba(255,255,255,.12);
+  background:rgba(255,255,255,.06);color:#c8c8e8;font-size:12px;cursor:pointer;line-height:1;padding:0}
+.qitem .qop:hover{background:rgba(199,54,247,.35);border-color:#c736f7}
+.qitem .qop.del:hover{background:rgba(255,79,155,.35);border-color:#ff4f9b}
 
 /* 底部控制条 */
 #controlbar{
-  display:flex;align-items:center;justify-content:center;gap:10px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;gap:10px;flex-shrink:0;flex-wrap:wrap;
   padding:10px 16px;background:rgba(8,6,20,.95);border-top:1px solid rgba(255,255,255,.08)}
+/* 进度条（常驻、不自动隐藏）：控制栏第一行全宽，支持拖拽 seek */
+#seekbar{
+  width:100%;display:flex;align-items:center;gap:10px;padding:2px 4px 10px;flex-wrap:nowrap}
+#seekbar.hide{display:none}
+#sb-cur,#sb-dur{font-size:12px;color:#9b9bc0;font-variant-numeric:tabular-nums;flex:0 0 auto;min-width:46px;text-align:center}
+#sb-track{
+  flex:1 1 auto;height:14px;border-radius:7px;background:rgba(255,255,255,.10);
+  position:relative;cursor:pointer;touch-action:none}
+#sb-fill{
+  position:absolute;left:0;top:0;bottom:0;width:0%;border-radius:7px;
+  background:linear-gradient(90deg,#ff4f9b,#c736f7,#36d9f7)}
+#sb-thumb{
+  position:absolute;top:50%;width:18px;height:18px;border-radius:50%;background:#fff;
+  transform:translate(-50%,-50%);box-shadow:0 2px 8px rgba(0,0,0,.5);
+  border:2px solid #c736f7;display:none}
+#seekbar:hover #sb-thumb,#seekbar.drag #sb-thumb{display:block}
+#sb-track:active{cursor:grabbing}
+/* 随机开关状态：ON/OFF 角标 + 文字变化，电视远看也清楚 */
+#cb-random{position:relative}
+#cb-random .rtxt{font-size:12px;font-weight:700}
+#cb-random .rbadge{
+  position:absolute;top:-4px;right:-4px;font-size:9px;font-weight:800;line-height:1.4;
+  padding:1px 5px;border-radius:8px;background:#22c55e;color:#fff;box-shadow:0 2px 6px rgba(0,0,0,.4)}
+#cb-random:not(.on) .rbadge{background:#5b5b74;color:#cfcfe6}
+#cb-random.on .rbadge{animation:rndpulse 1.6s ease-in-out infinite}
+@keyframes rndpulse{0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,.55)}50%{box-shadow:0 0 0 6px rgba(34,197,94,0)}}
 .cbtn{
   display:flex;flex-direction:column;align-items:center;gap:4px;min-width:92px;
   flex:0 0 auto; /* 禁止 flex 拉伸/收缩，宽度严格按 min-width */
@@ -59,9 +91,21 @@ body{background:#000;color:#fff;font-family:"PingFang SC","Microsoft YaHei",sans
 .cbtn.main{background:linear-gradient(135deg,#c736f7,#36d9f7);border-color:transparent;color:#0a0420;font-weight:700}
 .cbtn.main .ci{color:#0a0420}
 
-/* 全屏状态：隐藏已点列表与控制按钮，画面全屏（滚动条保留显示） */
+/* 全屏状态：队列面板隐藏；控制栏悬浮于视频下方，无操作自动隐藏、有操作恢复（类似视频网站） */
 body.fs #queue-panel{display:none}
-body.fs #controlbar{display:none}
+body.fs #controlbar{
+  position:fixed;left:0;bottom:0;width:100%;z-index:50;
+  background:linear-gradient(180deg,transparent,rgba(8,6,20,.88) 30%);
+  border-top:none;padding-bottom:14px;
+  transition:opacity .35s ease, transform .35s ease}
+body.fs #controlbar.hide-ui{opacity:0;transform:translateY(26px);pointer-events:none}
+/* 随机开关状态提示浮层 */
+#random-tip{position:fixed;bottom:24%;left:50%;transform:translateX(-50%);z-index:60;
+  background:rgba(8,6,20,.92);border:1px solid rgba(255,255,255,.2);border-radius:12px;
+  padding:14px 26px;font-size:22px;color:#fff;display:none;text-align:center;white-space:nowrap;
+  box-shadow:0 8px 28px rgba(0,0,0,.5)}
+#random-tip.show{display:block}
+#random-tip b{color:#ff4f9b}
 
 /* 正在播放/下一曲 顶部滚动条：KTV 风格，全宽从最右滚到最左，10~20 秒一次 */
 #ticker{
@@ -105,6 +149,34 @@ body.fs #conn{right:18px}
   opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;
   box-shadow:0 8px 30px rgba(0,0,0,.45);letter-spacing:1px}
 #effect-tip.show{opacity:1;transform:translate(-50%,0)}
+/* 扫码：控制条按钮触发，二维码卡片固定在右上角（常驻，点按钮切换） */
+#scan-pop{
+  position:fixed;top:66px;right:350px;z-index:30;display:none;width:220px;
+  background:rgba(14,12,32,.96);border:1px solid rgba(255,255,255,.14);border-radius:14px;
+  padding:16px;text-align:center;box-shadow:0 8px 28px rgba(0,0,0,.5);transition:right .2s}
+#scan-pop.show{display:block}
+body.fs #scan-pop{right:18px}
+@media (max-width:700px){#scan-pop{right:14px}}
+#scan-pop .st{font-size:14px;font-weight:700;color:#fff;margin-bottom:10px}
+#scan-qr{width:150px;height:150px;margin:0 auto;background:#fff;padding:6px;border-radius:8px;display:flex;align-items:center;justify-content:center}
+#scan-qr canvas,#scan-qr img{display:block;width:100%!important;height:100%!important}
+#scan-url{font-size:11px;color:#9a9ab8;margin-top:10px;word-break:break-all;user-select:all}
+#scan-pop .sc{font-size:11px;color:#6d6d8e;margin-top:4px}
+/* 均衡器预设面板：与控制条同排右侧，点选即生效 */
+#eq-pop{
+  position:fixed;top:66px;right:350px;z-index:30;display:none;width:230px;
+  background:rgba(14,12,32,.96);border:1px solid rgba(255,255,255,.14);border-radius:14px;
+  padding:16px;text-align:center;box-shadow:0 8px 28px rgba(0,0,0,.5);transition:right .2s}
+#eq-pop.show{display:block}
+body.fs #eq-pop{right:18px}
+@media (max-width:700px){#eq-pop{right:14px}}
+#eq-pop .st{font-size:14px;font-weight:700;color:#fff;margin-bottom:12px}
+#eq-presets{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.eqp{padding:10px 0;border-radius:10px;border:1px solid rgba(255,255,255,.12);
+  background:rgba(255,255,255,.06);color:#dcdcf2;font-size:13px;cursor:pointer;transition:.15s}
+.eqp:hover{background:rgba(199,54,247,.3);border-color:#c736f7}
+.eqp.on{background:linear-gradient(135deg,rgba(255,79,155,.5),rgba(199,54,247,.5));border-color:#ff4f9b;color:#fff;font-weight:700}
+#eq-pop .sc{font-size:11px;color:#6d6d8e;margin-top:10px}
 </style>
 </head>
 <body>
@@ -126,15 +198,43 @@ body.fs #conn{right:18px}
   </div>
 
   <div id="controlbar">
+    <div id="seekbar" class="hide">
+      <span id="sb-cur">00:00</span>
+      <div id="sb-track"><div id="sb-fill"></div><div id="sb-thumb"></div></div>
+      <span id="sb-dur">00:00</span>
+    </div>
     <div class="cbtn" id="cb-play" onclick="togglePlay()"><span class="ci">⏸</span>暂停</div>
     <div class="cbtn" id="cb-voice" onclick="toggleVoice()"><span class="ci">🎤</span>原/伴唱</div>
     <div class="cbtn" onclick="doRepeat()"><span class="ci">🔄</span>重唱</div>
     <div class="cbtn" onclick="doNext()"><span class="ci">⏭</span>切歌</div>
     <div class="cbtn" onclick="doVolume(-1)"><span class="ci">🔉</span>音量-</div>
     <div class="cbtn" onclick="doVolume(1)"><span class="ci">🔊</span>音量+</div>
-    <div class="cbtn" onclick="eqTip()"><span class="ci">🎛</span>均衡器</div>
+    <div class="cbtn" id="cb-eq" onclick="eqTip()"><span class="ci">🎛</span>均衡器</div>
     <div class="cbtn" onclick="toggleFullscreen()"><span class="ci">⛶</span>全屏</div>
+    <div class="cbtn" id="cb-scan" onclick="toggleScan()"><span class="ci">📱</span>扫码</div>
+    <div class="cbtn" id="cb-random" onclick="toggleRandom()"><span class="ci">🔀</span>随机</div>
   </div>
+</div>
+
+<div id="scan-pop">
+  <div class="st">手机扫码点歌</div>
+  <div id="scan-qr"></div>
+  <div id="scan-url"></div>
+  <div class="sc">再点扫码图标关闭</div>
+</div>
+
+<!-- 均衡器预设面板（KTV 场景预设，无需手动调） -->
+<div id="eq-pop">
+  <div class="st">均衡器预设</div>
+  <div id="eq-presets">
+    <button class="eqp" data-eq="flat" onclick="applyPreset('flat')">原声</button>
+    <button class="eqp" data-eq="pop" onclick="applyPreset('pop')">流行</button>
+    <button class="eqp" data-eq="rock" onclick="applyPreset('rock')">摇滚</button>
+    <button class="eqp" data-eq="dance" onclick="applyPreset('dance')">舞曲</button>
+    <button class="eqp" data-eq="vocal" onclick="applyPreset('vocal')">人声</button>
+    <button class="eqp" data-eq="diy" onclick="applyPreset('diy')">DIY</button>
+  </div>
+  <div class="sc">点选即生效，再点均衡器图标关闭</div>
 </div>
 
 <div id="conn" class="off">连接中…</div>
@@ -230,15 +330,19 @@ function handleQueue(){
   const playing=queueData.find(q=>q.status==='playing');
   if(playing){
     idleEl.style.display='none';
+    currentDur=playing.duration||0;
     if(currentQueueId!==playing.queue_id||currentSongId!==playing.song_id){
       currentQueueId=playing.queue_id; currentSongId=playing.song_id;
       voiceMode='original'; // 新歌默认原唱
       loadPlayer(`/hls/${playing.song_id}/master.m3u8`);
     }
+    updateSeekbar();
   }else{
     idleEl.style.display='flex';
     if(!player.paused) player.pause();
-    currentQueueId=null; currentSongId=null;
+    currentQueueId=null; currentSongId=null; currentDur=0;
+    updateSeekbar();
+    maybeRandomPlay(); // 本地空闲随机：队列空且开关开时随机点一首
   }
 }
 
@@ -301,11 +405,25 @@ function renderQueue(){
   visible.forEach((q,i)=>{
     const d=document.createElement('div');
     d.className='qitem'+(q.status==='playing'?' playing':'');
+    const ops=q.status==='playing'
+      ?''
+      :`<div class="qops">
+          <button class="qop" title="置顶" onclick="queueTop(${q.queue_id},event)">⬆</button>
+          <button class="qop del" title="删除" onclick="queueDel(${q.queue_id},event)">✕</button>
+        </div>`;
     d.innerHTML=`<div class="qn">${q.status==='playing'?'♪':i+1}</div>
-      <div class="qi"><div class="qt">${esc(q.title)}</div><div class="qm">${esc(q.artist||'')} · ${esc(q.nickname||'')}</div></div>`;
+      <div class="qi"><div class="qt">${esc(q.title)}</div><div class="qm">${esc(q.artist||'')} · ${esc(q.nickname||'')}</div></div>${ops}`;
     list.appendChild(d);
   });
   list.scrollTop=list.scrollHeight;
+}
+
+// 已点列表操作：置顶 / 删除（服务端广播后队列自动刷新）
+function queueTop(id,ev){ if(ev)ev.stopPropagation(); fetch('/api/queue/'+id+'/top',{method:'POST'}).catch(()=>{}); }
+function queueDel(id,ev){
+  if(ev)ev.stopPropagation();
+  if(!confirm('从已点列表移除这首歌？')) return;
+  fetch('/api/queue/'+id,{method:'DELETE'}).catch(()=>{});
 }
 
 player.addEventListener('ended',()=>{ fetch('/api/queue/next',{method:'POST'}).catch(()=>{}); });
@@ -478,7 +596,20 @@ function handleControl(action, msg){
     case 'next': fetch('/api/queue/next',{method:'POST'}).catch(()=>{}); break;
     case 'volume_up': player.volume=Math.min(1,player.volume+0.1); break;
     case 'volume_down': player.volume=Math.max(0,player.volume-0.1); break;
-    case 'eq': if(msg && msg.gains) applyEQ(msg.gains); break;
+    case 'eq':
+      if(msg && msg.gains) applyEQ(msg.gains);
+      // 远端（PAD）手调 DIY：更新 DIY 值并同步选择；选固定预设则只同步高亮
+      if(msg && msg.gains){
+        if(msg.preset==='diy' || !msg.preset){
+          eqPresets.diy = (msg.gains||[]).map(g=>parseFloat(g)||0);
+          try{ localStorage.setItem(EQ_STORAGE,'diy'); }catch(e){}
+          syncEqButtons();
+        } else if(msg.preset && eqPresets[msg.preset]){
+          try{ localStorage.setItem(EQ_STORAGE,msg.preset); }catch(e){}
+          syncEqButtons();
+        }
+      }
+      break;
     // home/fullscreen/ok/focus_* 已随手机端遥控入口下线，不再处理
   }
 }
@@ -526,8 +657,47 @@ function toggleVoice(){
   }
   sendState();
 }
-function sendCtrl(action){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'control',action})); }
-function eqTip(){ flash(this); }
+function sendCtrl(action, payload){ if(ws&&ws.readyState===1) ws.send(JSON.stringify(Object.assign({type:'control',action}, payload||{}))); }
+
+// ---------- 均衡器预设（KTV 场景，10 段 peaking，无需手动调） ----------
+const EQ_STORAGE='ktv_eq_preset';
+const eqPresets={
+  flat:[0,0,0,0,0,0,0,0,0,0],      // 原声：不修饰
+  pop:[3,2,1,0,1,2,3,4,4,3],       // 流行：中高频稍亮
+  rock:[5,4,2,0,-1,0,3,4,5,5],     // 摇滚：低音强劲、高音清晰
+  dance:[7,5,3,0,-1,-1,2,4,5,5],   // 舞曲：重低音
+  vocal:[0,0,2,4,5,4,2,0,-1,-2],   // 人声：突出中频，适合抒情
+  diy:[0,0,0,0,0,0,0,0,0,0],       // DIY：值由 PAD 端手动调整同步过来
+};
+function eqTip(){
+  const pop=document.getElementById('eq-pop');
+  const show=!pop.classList.contains('show');
+  if(show) syncEqButtons();
+  pop.classList.toggle('show',show);
+}
+function applyPreset(name){
+  const g=eqPresets[name]||eqPresets.flat;
+  applyEQ(g);
+  try{ localStorage.setItem(EQ_STORAGE,name); }catch(e){}
+  document.getElementById('eq-pop').classList.remove('show');
+  syncEqButtons();
+  flash(document.getElementById('cb-eq'));
+  // 广播给 PAD/手机：它们收到后同步显示与高亮
+  sendCtrl('eq',{gains:g, preset:name});
+}
+function syncEqButtons(){
+  let cur='flat';
+  try{ cur=localStorage.getItem(EQ_STORAGE)||'flat'; }catch(e){}
+  document.querySelectorAll('#eq-presets .eqp').forEach(b=>{
+    b.classList.toggle('on', b.dataset.eq===cur);
+  });
+}
+// 刷新页面后 audioCtx 重建，播放时恢复上次选择的预设
+player.addEventListener('play',()=>{
+  let cur='flat';
+  try{ cur=localStorage.getItem(EQ_STORAGE)||'flat'; }catch(e){}
+  if(eqPresets[cur]) applyEQ(eqPresets[cur]);
+});
 function flash(el){
   const old=el.style.background;
   el.style.background='rgba(54,217,247,.5)';
@@ -542,9 +712,197 @@ function sendProgress(){
   }
 }
 setInterval(sendProgress,3000);
+
+// ===== 进度条（常驻、不自动隐藏，支持拖拽 seek） =====
+let currentDur=0, sbDragging=false;
+function fmtTime(s){
+  s=Math.max(0,Math.floor(s||0));
+  const m=Math.floor(s/60), ss=s%60;
+  return (m<10?'0':'')+m+':'+(ss<10?'0':'')+ss;
+}
+function updateSeekbar(){
+  const sb=document.getElementById('seekbar');
+  if(!currentQueueId||!currentSongId){ sb.classList.add('hide'); return; }
+  sb.classList.remove('hide');
+  let dur=currentDur;
+  if(!dur||!isFinite(dur)){ const d=player.duration; if(d&&isFinite(d)) dur=d; }
+  const cur=player.currentTime||0;
+  document.getElementById('sb-cur').textContent=fmtTime(cur);
+  document.getElementById('sb-dur').textContent=fmtTime(dur||0);
+  const pct=dur>0?Math.min(100,cur/dur*100):0;
+  document.getElementById('sb-fill').style.width=pct+'%';
+  document.getElementById('sb-thumb').style.left=pct+'%';
+}
+player.addEventListener('timeupdate',()=>{ if(!sbDragging) updateSeekbar(); });
+setInterval(()=>{ if(!sbDragging) updateSeekbar(); },2000);
+
+(function initSeekbar(){
+  const tr=document.getElementById('sb-track');
+  if(!tr) return;
+  function posToSec(e){
+    const r=tr.getBoundingClientRect();
+    const x=(e.clientX||r.left)-r.left;
+    const pct=Math.max(0,Math.min(1,x/r.width));
+    let dur=currentDur;
+    if(!dur||!isFinite(dur)){ const d=player.duration; if(d&&isFinite(d)) dur=d; }
+    return {pct, sec:(dur||0)*pct};
+  }
+  function paint(pct,sec){
+    document.getElementById('sb-fill').style.width=(pct*100)+'%';
+    document.getElementById('sb-thumb').style.left=(pct*100)+'%';
+    document.getElementById('sb-cur').textContent=fmtTime(sec);
+  }
+  tr.addEventListener('pointerdown',e=>{
+    if(!currentQueueId) return;
+    sbDragging=true;
+    tr.classList.add('drag');
+    const {pct,sec}=posToSec(e);
+    paint(pct,sec);
+    if(tr.setPointerCapture) tr.setPointerCapture(e.pointerId);
+  });
+  tr.addEventListener('pointermove',e=>{
+    if(!sbDragging) return;
+    const {pct,sec}=posToSec(e);
+    paint(pct,sec);
+  });
+  function endDrag(e){
+    if(!sbDragging) return;
+    sbDragging=false;
+    tr.classList.remove('drag');
+    const {sec}=posToSec(e);
+    seekTo(sec);
+  }
+  tr.addEventListener('pointerup',endDrag);
+  tr.addEventListener('pointercancel',()=>{ sbDragging=false; tr.classList.remove('drag'); });
+})();
+
+function seekTo(sec){
+  if(!currentSongId||sec<0) return;
+  if(hls){
+    // HLS：已转码部分可即时跳转，未转码部分等转码跟上
+    try{ player.currentTime=sec; player.play().catch(()=>{}); }catch(e){}
+  } else if(player.src&&player.src.includes('/stream/')&&/[?&]track=/.test(player.src)){
+    // 直连转码流（多音轨/strm 指定轨）：不支持 Range，带 start 重新请求
+    const base=player.src.split('?')[0];
+    const m=player.src.match(/[?&]track=(\d+)/);
+    const qs='track='+(m?m[1]:'')+'&start='+Math.round(sec*1000);
+    player.src=base+'?'+qs;
+    player.play().catch(()=>{});
+  } else {
+    // 直连单音轨（Range）/原生：直接 currentTime
+    try{ player.currentTime=sec; player.play().catch(()=>{}); }catch(e){}
+  }
+}
+
+// ===== 空闲随机播放（本地开关：默认 OFF，状态存本机 localStorage，不依赖服务端设置） =====
+const RANDOM_KEY='ktv_tv_random';
+let randomOn=false;
+function randomState(){ try{ return localStorage.getItem(RANDOM_KEY)==='1'; }catch(e){ return false; } }
+function randomTip(on){
+  let el=document.getElementById('random-tip');
+  if(!el){ el=document.createElement('div'); el.id='random-tip'; document.body.appendChild(el); }
+  el.innerHTML='空闲随机播放：<b>'+(on?'已开启 🔀':'已关闭')+'</b>';
+  el.classList.remove('show'); void el.offsetWidth; el.classList.add('show');
+  clearTimeout(el._tm); el._tm=setTimeout(()=>el.classList.remove('show'),2200);
+}
+function setRandomUI(on){
+  randomOn=on;
+  const b=document.getElementById('cb-random');
+  if(!b) return;
+  b.classList.toggle('on',on);
+  b.innerHTML=on
+    ?'<span class="ci">🔀</span><span class="rtxt">随机中</span><span class="rbadge">ON</span>'
+    :'<span class="ci">🔀</span><span class="rtxt">随机</span><span class="rbadge">OFF</span>';
+}
+function toggleRandom(){
+  const on=!randomOn;
+  try{ localStorage.setItem(RANDOM_KEY, on?'1':'0'); }catch(e){}
+  setRandomUI(on);
+  randomTip(on);
+}
+// 队列空 + 开关开：本地随机点一首（排除已在队列中的歌）
+let randomBusy=false, lastRandomAt=0;
+async function maybeRandomPlay(){
+  if(!randomOn||randomBusy) return;
+  const now=Date.now();
+  if(now-lastRandomAt<4000) return; // 防抖，避免重复触发
+  // 二次确认队列真的空（WS 广播可能延迟）
+  try{
+    const q=await (await fetch('/api/queue')).json();
+    const list=Array.isArray(q)?q:(q&&q.data?q.data:[]);
+    if(list.some(e=>e.status==='playing'||e.status==='waiting')) return;
+  }catch(e){ return; }
+  randomBusy=true;
+  try{
+    const songs=await (await fetch('/api/songs')).json();
+    const arr=Array.isArray(songs)?songs:(songs&&songs.data?songs.data:[]);
+    if(!arr.length){ return; }
+    const taken=new Set((queueData||[]).map(x=>x.song_id));
+    const pool=arr.filter(s=>!taken.has(s.id));
+    const src=pool.length?pool:arr;
+    const pick=src[Math.floor(Math.random()*src.length)];
+    if(pick){
+      lastRandomAt=Date.now();
+      await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({song_id:pick.id,nickname:'随机播放'})});
+    }
+  }catch(e){} finally{ randomBusy=false; }
+}
+setRandomUI(randomState());
+
+// ===== 全屏控制栏悬浮自动隐藏（无操作 4 秒隐藏，有操作恢复） =====
+let fsHideTimer=null;
+function scheduleFsHide(){
+  const cbar=document.getElementById('controlbar');
+  cbar.classList.remove('hide-ui');
+  clearTimeout(fsHideTimer);
+  fsHideTimer=setTimeout(()=>{
+    if(document.fullscreenElement) cbar.classList.add('hide-ui');
+  },4000);
+}
+document.addEventListener('fullscreenchange',()=>{
+  const cbar=document.getElementById('controlbar');
+  if(document.fullscreenElement){
+    cbar.classList.remove('hide-ui');
+    scheduleFsHide();
+  } else {
+    clearTimeout(fsHideTimer);
+    cbar.classList.remove('hide-ui');
+  }
+});
+['mousemove','pointerdown','keydown','touchstart'].forEach(ev=>{
+  document.addEventListener(ev,()=>{ if(document.fullscreenElement) scheduleFsHide(); });
+});
 player.addEventListener('pause',sendState);
 player.addEventListener('play',sendState);
 function esc(s){ return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+// ============ 扫码 ============
+let scanInited=false;
+function toggleScan(){
+  const btn=document.getElementById('cb-scan');
+  const pop=document.getElementById('scan-pop');
+  const show=!pop.classList.contains('show');
+  if(show){
+    if(!scanInited){
+      const url=location.protocol+'//'+location.host+'/m/';
+      const box=document.getElementById('scan-qr');
+      box.innerHTML='';
+      if(window.QRCode){
+        new QRCode(box, {text:url, width:150, height:150, colorDark:'#12052c', colorLight:'#ffffff'});
+      }else{
+        box.textContent='二维码组件不可用，请直接访问：'+url;
+      }
+      document.getElementById('scan-url').textContent=url;
+      scanInited=true;
+    }
+    pop.classList.add('show');
+    btn.classList.add('on');
+  }else{
+    pop.classList.remove('show');
+    btn.classList.remove('on');
+  }
+}
 </script>
 </body>
 </html>

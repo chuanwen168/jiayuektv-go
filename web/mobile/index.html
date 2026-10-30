@@ -26,10 +26,10 @@ header{
 /* 顶部标题栏：只保留居中标题，不再放搜索/刷新图标 */
 .topbar{display:flex;align-items:center;justify-content:center}
 .brand{font-size:17px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-/* 常驻播放控制行：改成一行显示，不允许换行；曲库搜索/互动/队列各 tab 切换时
+/* 常驻播放控制行：8 个按钮排成 2 行 × 4 列（grid），避免一行挤满；曲库搜索/互动/队列各 tab 切换时
    都保持可见，不再收在"互动"tab 里，也不需要额外的卡片背景/标题包裹。 */
-.ctrl-row.main-row{display:flex;flex-wrap:nowrap;gap:8px;margin-top:12px}
-.ctrl-row.main-row .ctrl-btn{min-width:0;max-width:none;flex:1 1 0;padding:9px 2px}
+.ctrl-row.main-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px 10px;margin-top:12px}
+.ctrl-row.main-row .ctrl-btn{min-width:0;max-width:none;width:100%;padding:10px 4px;box-sizing:border-box}
 .ctrl-row.main-row .ci svg{width:19px;height:19px}
 .ctrl-row.main-row .cl{font-size:10.5px;white-space:nowrap}
 /* Tab bar */
@@ -266,6 +266,25 @@ header{
   border-radius:10px;padding:7px 16px;font-size:13px}
 .pager button:disabled{opacity:.35}
 .mfull-empty{text-align:center;color:#555;padding:40px 0;font-size:14px}
+/* ===== 均衡器面板（复用 pad 端样式，适配本页变量） ===== */
+.eq-presets{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}
+.eq-preset{
+  padding:10px 20px;border-radius:999px;background:rgba(255,255,255,.06);cursor:pointer;
+  border:1px solid rgba(255,255,255,.1);font-size:14px;color:var(--sub);transition:.15s}
+.eq-preset:hover{background:rgba(199,54,247,.2);color:#fff}
+.eq-preset.sel{background:linear-gradient(135deg,rgba(199,54,247,.45),rgba(54,217,247,.35));border-color:var(--accent);color:#fff}
+.eq-band{display:flex;align-items:center;gap:16px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+.eq-freq{width:72px;font-size:13px;color:var(--sub);flex-shrink:0;text-align:right}
+.eq-val{width:52px;font-size:13px;color:var(--accent2);flex-shrink:0;text-align:right}
+input[type=range].eq-slider{flex:1;-webkit-appearance:none;appearance:none;height:6px;border-radius:6px;
+  background:linear-gradient(90deg,rgba(199,54,247,.5),rgba(54,217,247,.5));outline:none}
+input[type=range].eq-slider::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;
+  background:#fff;border:3px solid var(--accent);cursor:pointer;box-shadow:0 0 10px rgba(199,54,247,.6)}
+input[type=range].eq-slider::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:#fff;border:3px solid var(--accent);cursor:pointer}
+/* 随机按钮 ON 状态（同 voice-active 视觉） */
+.ctrl-btn.random-on{background:rgba(199,54,247,.38);border-color:var(--accent)}
+.ctrl-btn.random-on .cl{color:var(--accent2)}
+.r-badge{font-size:9px;color:#ffd700;margin-left:2px}
 </style>
 </head>
 <body>
@@ -288,6 +307,10 @@ header{
     <div class="ctrl-btn red" onclick="sendCtrl('next')">
       <span class="ci"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 4 15 12 5 20 5 4"/><rect x="17" y="4" width="2" height="16"/></svg></span><span class="cl">切歌</span>
     </div>
+    <div class="ctrl-btn" onclick="sendCtrl('volume_down')"><span class="ci">🔉</span><span class="cl">音量-</span></div>
+    <div class="ctrl-btn" onclick="sendCtrl('volume_up')"><span class="ci">🔊</span><span class="cl">音量+</span></div>
+    <div class="ctrl-btn" onclick="openEq()"><span class="ci">🎛</span><span class="cl">均衡器</span></div>
+    <div class="ctrl-btn" id="r-random-btn" onclick="toggleRandom()"><span class="ci">🔀</span><span class="cl">随机<span class="r-badge" id="r-random-badge">OFF</span></span></div>
   </div>
 
   <!-- 常驻搜索框：不再收在"点歌"tab 里，切到"队列"/"互动"页面也一直显示，
@@ -330,6 +353,16 @@ header{
 </div>
 
 <!-- ====== 歌名点歌 ====== -->
+<!-- ====== 均衡器 ====== -->
+<div class="mfull" id="page-eq">
+  <div class="mfull-head"><div class="mfull-back" onclick="closeMPage('page-eq')">‹ 返回</div><div class="mfull-title">🎛 均衡器</div></div>
+  <div class="mfull-body">
+    <div class="eq-presets" id="eq-presets"></div>
+    <div id="eq-bands"></div>
+    <div style="margin-top:18px;font-size:12px;color:#6d6a8f">调节实时作用于 TV 播放端；预设含 平坦 / 流行 / 摇滚 / 舞曲 / 人声</div>
+  </div>
+</div>
+
 <div class="mfull" id="page-order">
   <div class="mfull-head"><div class="mfull-back" onclick="closeMPage('page-order')">‹ 返回</div><div class="mfull-title">🎵 歌名点歌</div></div>
   <div class="mfull-body">
@@ -524,6 +557,7 @@ function connectWS(){
     if(msg.type==='queue'){queueData=msg.data;onQueue();}
     if(msg.type==='state'){applyPlaybackState(msg);}
     if(msg.type==='progress'){ctrlProgress={queueId:msg.queueId,currentTime:Number(msg.currentTime)||0,updatedAt:Date.now(),paused:!!msg.paused};}
+    if(msg.type==='control'&&msg.action==='eq'){applyRemoteEq(msg);}
   };
   ws.onclose=()=>setTimeout(connectWS,2000);
   window._ws=ws;
@@ -547,8 +581,96 @@ function tickCtrlProgress(){
 }
 setInterval(tickCtrlProgress,500);
 
-function sendCtrl(action){ sendWS({type:'control',action}); }
+function sendCtrl(action, payload){ sendWS(Object.assign({type:'control',action}, payload||{})); }
 function sendWS(obj){ if(window._ws&&window._ws.readyState===1) window._ws.send(JSON.stringify(obj)); }
+
+// ============ 均衡器（复用 pad 端面板逻辑） ============
+const EQ_FREQS=[60,170,310,600,1000,3000,6000,12000,14000,16000];
+const EQ_PRESETS={
+  flat:[0,0,0,0,0,0,0,0,0,0],
+  pop:[3,2,1,0,1,2,3,4,4,3],
+  rock:[5,4,2,0,-1,0,3,4,5,5],
+  dance:[7,5,3,0,-1,-1,2,4,5,5],
+  vocal:[0,0,2,4,5,4,2,0,-1,-2],
+  diy:[0,0,0,0,0,0,0,0,0,0]
+};
+const EQ_LABELS={flat:'原声',pop:'流行',rock:'摇滚',dance:'舞曲',vocal:'人声',diy:'DIY'};
+let eqGains=(JSON.parse(localStorage.getItem('ktv_eq')||'null')||EQ_PRESETS.flat.slice());
+let eqActivePreset='';
+(function(){
+  const m=Object.keys(EQ_PRESETS).find(n=>JSON.stringify(EQ_PRESETS[n])===JSON.stringify(eqGains));
+  if(m){eqActivePreset=m;}else{eqActivePreset='diy';EQ_PRESETS.diy=eqGains.slice();}
+})();
+function openEq(){renderEqPresets();renderEqBands();openMPage('page-eq');}
+function renderEqPresets(){
+  const el=document.getElementById('eq-presets');if(!el)return;
+  el.innerHTML=Object.keys(EQ_PRESETS).map(n=>{
+    const lb=EQ_LABELS[n]||n;const act=eqActivePreset===n;
+    return `<div class="eq-preset${act?' sel':''}" onclick="eqSetPreset('${n}')">${lb}</div>`;
+  }).join('');
+}
+function eqSetPreset(n){eqGains=EQ_PRESETS[n].slice();eqActivePreset=n;renderEqPresets();renderEqBands();eqApply();}
+function renderEqBands(){
+  const el=document.getElementById('eq-bands');if(!el)return;
+  el.innerHTML=eqGains.map((g,i)=>{
+    const f=EQ_FREQS[i];const fl=f>=1000?(f/1000)+'k':f;const db=g>0?'+'+g:g;
+    return `<div class="eq-band"><div class="eq-freq">${fl}Hz</div><input type="range" class="eq-slider" min="-12" max="12" step="1" value="${g}" oninput="eqSetBand(${i}, this.value)"><div class="eq-val" id="eq-val-${i}">${db}dB</div></div>`;
+  }).join('');
+}
+function eqSetBand(i,v){
+  eqGains[i]=parseFloat(v);
+  const el=document.getElementById('eq-val-'+i);if(el)el.textContent=(v>0?'+':'')+v+'dB';
+  eqActivePreset='diy';EQ_PRESETS.diy=eqGains.slice();renderEqPresets();eqApply();
+}
+function eqApply(){localStorage.setItem('ktv_eq',JSON.stringify(eqGains));sendCtrl('eq',{gains:eqGains,preset:eqActivePreset});showToast('均衡器已应用 🎛');}
+function applyRemoteEq(msg){
+  if(!msg.gains)return;
+  eqGains=(msg.gains||[]).map(g=>parseFloat(g)||0);
+  eqActivePreset=msg.preset||'';
+  localStorage.setItem('ktv_eq',JSON.stringify(eqGains));
+  if(document.getElementById('page-eq').classList.contains('open')){renderEqPresets();renderEqBands();}
+}
+
+// ============ 随机播放（本地开关，逻辑同 TV 端） ============
+const RANDOM_KEY='ktv_mobile_random';
+let randomOn=false;
+try{randomOn=localStorage.getItem(RANDOM_KEY)==='1';}catch(e){}
+function setRandomUI(on){
+  const btn=document.getElementById('r-random-btn');
+  const bd=document.getElementById('r-random-badge');
+  if(btn)btn.classList.toggle('random-on',on);
+  if(bd)bd.textContent=on?'ON':'OFF';
+}
+function toggleRandom(){
+  randomOn=!randomOn;
+  try{localStorage.setItem(RANDOM_KEY,randomOn?'1':'0');}catch(e){}
+  setRandomUI(randomOn);
+  showToast(randomOn?'随机播放：已开启 🔀':'随机播放：已关闭');
+  if(randomOn)maybeRandomPlay();
+}
+let randomBusy=false,lastRandomAt=0;
+async function maybeRandomPlay(){
+  if(!randomOn||randomBusy)return;
+  const now=Date.now();
+  if(now-lastRandomAt<4000)return; // 防抖
+  try{
+    const q=await (await fetch('/api/queue')).json();
+    const list=Array.isArray(q)?q:(q&&q.data?q.data:[]);
+    if(list.some(e=>e.status==='playing'||e.status==='waiting'))return;
+  }catch(e){return;}
+  randomBusy=true;
+  try{
+    const songs=await (await fetch('/api/songs')).json();
+    const arr=Array.isArray(songs)?songs:(songs&&songs.data?songs.data:[]);
+    if(!arr.length)return;
+    const taken=new Set((queueData||[]).map(x=>x.song_id));
+    const pool=arr.filter(s=>!taken.has(s.id));
+    const src=pool.length?pool:arr;
+    const pick=src[Math.floor(Math.random()*src.length)];
+    if(pick){lastRandomAt=Date.now();await fetch('/api/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({song_id:pick.id,nickname:'随机播放'})});}
+  }catch(e){}finally{randomBusy=false;}
+}
+setRandomUI(randomOn);
 
 // 互动氛围音效：点击按钮 → 发送 effect 消息 → TV 大屏播放（欢呼/鼓掌等）
 function sendEffect(name){
@@ -574,6 +696,7 @@ function onQueue(){
     document.getElementById('nb-status').textContent='';
   }
   if(document.getElementById('tab-queue').style.display!=='none') renderQueue();
+  maybeRandomPlay(); // 随机开关开 + 队列空：自动随机点一首（4s 防抖）
 }
 
 // 需求(已点列表后台预加载)：跟 TV 端同一套逻辑，服务端会在队列变化时后台
@@ -855,7 +978,7 @@ function renderArtists(){
     const c=document.createElement('div');c.className='ag-card';
     const rowIdx=Math.floor(i/AG_COLS);
     const avHtml=a.hasAvatar
-      ? `<img class="ag-av" src="/singer/${encodeURIComponent(a.artist)}.webp" alt="" onerror="if(this.dataset.s==='2'){this.outerHTML='<div class=&quot;ag-av&quot; style=&quot;background:${AV_COLORS[rowIdx%AV_COLORS.length]}&quot;>${a.artist.charAt(0)}</div>'}else{this.dataset.s='2';this.src='/singer/${encodeURIComponent(a.artist)}.jpg'}">`
+      ? `<img class="ag-av" src="/singer/${encodeURIComponent(a.artist)}.webp" alt="" onerror="if(this.dataset.s==='2'){this.outerHTML='<div class=&quot;ag-av&quot; style=&quot;background:${AV_COLORS[rowIdx%AV_COLORS.length]}&quot;>${a.artist.charAt(0)}</div>'}else if(this.dataset.s==='1'){this.dataset.s='2';this.src='/singer/${encodeURIComponent(a.artist)}.jpg'}else{this.dataset.s='1';this.src='/singer/${encodeURIComponent(a.artist)}.png'}">`
       : `<div class="ag-av" style="background:${AV_COLORS[rowIdx%AV_COLORS.length]}">${a.artist.charAt(0)}</div>`;
     c.innerHTML=`${avHtml}<div class="ag-name">${a.artist}</div><div class="ag-cnt">${a.count}首</div>`;
     c.onclick=()=>openArtistSongs(a.artist);

@@ -86,9 +86,17 @@ type HLS struct {
 // AMD 核显/独显(radeonsi)、常见 N 卡开源驱动布局。
 var vaapiDeviceCandidates = []string{"/dev/dri/renderD128", "/dev/dri/renderD129", "/dev/dri/card0"}
 
-func New(dir, vaapiDevice string, maxAgeDays int, nvenc string) *HLS {
+// TranscodeSem 全局转码并发信号量（1.0.4）：限制同时运行的 ffmpeg 转码任务数
+// （HLS 转码 + 直连多音轨重新封装共用），防止小 CPU（NAS/低端主机）被多房间
+// 同时切歌打满。由 New 按 cfg.TranscodeConcurrency 初始化；容量 0 表示不限制。
+var TranscodeSem chan struct{}
+
+func New(dir, vaapiDevice string, maxAgeDays int, nvenc string, transcodeConcurrency int) *HLS {
 	if nvenc == "" {
 		nvenc = "auto"
+	}
+	if transcodeConcurrency > 0 {
+		TranscodeSem = make(chan struct{}, transcodeConcurrency)
 	}
 	return &HLS{
 		Dir:         dir,
@@ -704,6 +712,11 @@ func (h *HLS) Ensure(song *db.Song) (string, error) {
 
 	go func() {
 		defer h.unmarkBuilding(id)
+		if TranscodeSem != nil {
+			TranscodeSem <- struct{}{} // 排队等待转码槽位（多房间同时切歌时限制并发）
+			defer func() { <-TranscodeSem }()
+			logger.Info("TRANSCODE", fmt.Sprintf("%s 进入转码队列，当前并行任务数 %d/%d", songTag, len(TranscodeSem), cap(TranscodeSem)))
+		}
 		if err := h.buildHLS(song, dir); err != nil {
 			h.setBuildError(id, err)
 		}

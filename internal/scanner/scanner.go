@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"ktvhome/internal/binpath"
@@ -412,6 +413,54 @@ func ParseFilename(filename string) (artist, title, language, genre string) {
 	return artist, title, language, genre
 }
 
+// BuildFilename 根据原文件名与新的语种/风格，构造规范化新文件名：
+//
+//	歌手 - 歌名 - 语种 - 风格.ext（未设置的段保留原文件名解析值，仍为空则省略）
+//
+// 供管理后台"批量设置语种/风格 + 同步修改文件名"使用；文件名前缀（歌手/歌名）
+// 原样保留，仅重写尾部元数据段，保证与 ParseFilename 解析规则互逆。
+func BuildFilename(oldFilename string, setLang bool, lang string, setGenre bool, genre string) string {
+	base := filepath.Base(oldFilename)
+	ext := filepath.Ext(base)
+	artist, title, oldLang, oldGenre := ParseFilename(base)
+	finalLang, finalGenre := oldLang, oldGenre
+	if setLang {
+		finalLang = lang
+	}
+	if setGenre {
+		finalGenre = genre
+	}
+	parts := []string{artist, title}
+	if finalLang != "" {
+		parts = append(parts, finalLang)
+	}
+	if finalGenre != "" {
+		parts = append(parts, finalGenre)
+	}
+	return strings.Join(parts, " - ") + ext
+}
+
+// BuildFilenameAll 根据歌手/歌名/语种/风格完整重建文件名（单曲编辑同步改名用）。
+// 与 BuildFilename 不同：前缀也用新值（编辑场景歌名/歌手可能已修改）。
+func BuildFilenameAll(artist, title, lang, genre, ext string) string {
+	artist = strings.TrimSpace(artist)
+	title = strings.TrimSpace(title)
+	if artist == "" {
+		artist = "未知歌手"
+	}
+	if title == "" {
+		title = "未知歌名"
+	}
+	parts := []string{artist, title}
+	if lang != "" {
+		parts = append(parts, lang)
+	}
+	if genre != "" {
+		parts = append(parts, genre)
+	}
+	return strings.Join(parts, " - ") + ext
+}
+
 func matchLanguage(s string) (string, bool) {
 	for _, l := range DefaultLanguages {
 		if s == l {
@@ -479,9 +528,13 @@ func (s *Scanner) ScanLibrary() ScanResult {
 	// 渐进式入库：逐来源逐文件探测、立即入库，扫描过程中的新歌立即可查。
 	// 默认根来源只扫根级文件，子目录来源递归；filename 统一用正斜杠
 	// （filepath.ToSlash），保证跨平台（Windows 开发 / Linux 部署）一致。
+	// 1.0.4：ffprobe 音轨探测改为并发（限 2 个 worker），大曲库扫描提速；
+	// 入库仍逐条独立 INSERT，无顺序依赖。
 	added := 0
 	total := 0
 	validSet := make(map[string]bool) // 当前启用来源下有效 filename 集合（用于清理）
+	type job struct{ path, filename string }
+	var pending []job
 	for _, src := range enabled {
 		if _, err := os.Stat(src.Root); err != nil {
 			logger.Error("SCAN", "曲库来源不可访问，已跳过("+src.Label+"): "+err.Error())
@@ -508,23 +561,44 @@ func (s *Scanner) ScanLibrary() ScanResult {
 			if existingSet[filename] {
 				continue
 			}
-			artist, title, language, genre := ParseFilename(f)
-			tracks := ProbeAudioTracks(f)
-			res, err := db.DB.Exec(
-				`INSERT INTO songs (title, artist, filename, filepath, audio_tracks, language, genre)
-				 VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(filename) DO NOTHING`,
-				title, artist, filename, f, tracks, language, genre,
-			)
-			if err != nil {
-				logger.Error("SCAN", "曲库扫描-新增文件入库失败("+filename+"): "+err.Error())
-				continue
-			}
-			if n, _ := res.RowsAffected(); n > 0 {
-				added++
-				existingSet[filename] = true
-			}
+			pending = append(pending, job{path: f, filename: filename})
 		}
 	}
+
+	// 并发探测 + 入库（worker=2）；existingSet/added 由锁保护。
+	var mu sync.Mutex
+	jobs := make(chan job)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				artist, title, language, genre := ParseFilename(j.path)
+				tracks := ProbeAudioTracks(j.path)
+				res, err := db.DB.Exec(
+					`INSERT INTO songs (title, artist, filename, filepath, audio_tracks, language, genre)
+					 VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(filename) DO NOTHING`,
+					title, artist, j.filename, j.path, tracks, language, genre,
+				)
+				if err != nil {
+					logger.Error("SCAN", "曲库扫描-新增文件入库失败("+j.filename+"): "+err.Error())
+					continue
+				}
+				if n, _ := res.RowsAffected(); n > 0 {
+					mu.Lock()
+					added++
+					existingSet[j.filename] = true
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+	for _, j := range pending {
+		jobs <- j
+	}
+	close(jobs)
+	wg.Wait()
 
 	// 兼容旧版本：给 audio_tracks 为空的老曲目补测音轨数。
 	s.backfillAudioTracks()

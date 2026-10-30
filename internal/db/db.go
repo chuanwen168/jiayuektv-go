@@ -141,6 +141,15 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- 1.0.4 性能索引：大曲库下筛选/榜单/历史聚合加速（IF NOT EXISTS 幂等，已有库启动时自动补建）。
+CREATE INDEX IF NOT EXISTS idx_songs_language ON songs(language);
+CREATE INDEX IF NOT EXISTS idx_songs_genre ON songs(genre);
+CREATE INDEX IF NOT EXISTS idx_songs_play_count ON songs(play_count);
+CREATE INDEX IF NOT EXISTS idx_songs_created_at ON songs(created_at);
+CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
+CREATE INDEX IF NOT EXISTS idx_history_song ON history(song_id);
+CREATE INDEX IF NOT EXISTS idx_history_played_at ON history(played_at);
 `
 
 // migrateColumns 幂等补齐 songs 表的 audio_tracks/language/genre 列。
