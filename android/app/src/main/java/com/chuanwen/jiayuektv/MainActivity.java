@@ -11,6 +11,7 @@ import android.os.Looper;
 import android.text.Spannable;
 import android.text.SpannableStringBuilder;
 import android.text.style.ForegroundColorSpan;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
@@ -19,56 +20,83 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
-import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
-import androidx.annotation.OptIn;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.SwitchCompat;
-import androidx.media3.common.C;
-import androidx.media3.common.Format;
-import androidx.media3.common.MediaItem;
-import androidx.media3.common.PlaybackException;
-import androidx.media3.common.Player;
-import androidx.media3.common.TrackGroup;
-import androidx.media3.common.TrackSelectionOverride;
-import androidx.media3.common.TrackSelectionParameters;
-import androidx.media3.common.Tracks;
-import androidx.media3.exoplayer.ExoPlayer;
-import androidx.media3.ui.PlayerView;
+import androidx.media3.ui.AspectRatioFrameLayout;
 
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.common.BitMatrix;
 import com.google.zxing.qrcode.QRCodeWriter;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.net.HttpURLConnection;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Enumeration;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 家悦K歌 · 安卓 TV 播放端
- * 全屏原生播放（ExoPlayer/HLS），不显示播放列表；
- * 悬浮控制按键无操作自动隐藏；扫码按钮弹出右上角二维码；顶部间歇滚动字幕。
+ *
+ * 播放策略（设置页规则）：
+ *   - 默认 HLS 模式，固定使用 Media3（服务端已转码，起播快、切歌不卡顿）；
+ *   - 直连模式默认使用 VLC（全格式直解），可手动切换 Media3；
+ *   - 直连播放失败 / 不支持 / 10s 未起播 → 自动回退 HLS(Media3)；
+ *   - 原唱/伴唱切换：HLS 走 TrackSelector 原位无缝切换；WS 广播指令只执行
+ *     切换、不回发上报，避免与服务端广播形成"疯狂切伴奏"死循环。
+ * 其余：播放超过 30s 自动预热下一首；悬浮控制无操作自动隐藏；扫码点歌；
+ * 顶部滚动字幕；氛围音效。
  */
-@OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)
 public class MainActivity extends AppCompatActivity {
 
     private static final String PREFS = "jiayue_prefs";
     private static final String KEY_SERVER = "server";
     private static final String KEY_VOICE_DEFAULT = "voice_default";
+    private static final String KEY_PLAY_MODE = "play_mode";   // direct | hls（默认 hls）
+    private static final String KEY_CORE = "core";             // media3 | vlc（直连默认 vlc）
+    private static final String KEY_FILL_SCREEN = "fill_screen"; // 播放画面撑满屏幕缩放开关
+    private static final String KEY_RANDOM_IDLE_MIN = "random_idle_min"; // 随机空闲自动停止（分钟，0=关闭，默认30）
+    private static final int RANDOM_IDLE_DEFAULT_MIN = 30;
+    private static final String KEY_CFG_VER = "cfg_ver";       // 设置结构版本（升级迁移用）
+    private static final int CFG_VER_CURRENT = 3;              // v3：新增撑满屏幕开关
+    private static final String TAG = "JYKTV";             // 诊断日志 tag（临时定位用）
     private static final long POLL_INTERVAL = 2000;   // 状态轮询
     private static final long HIDE_DELAY = 5000;      // 控制层自动隐藏
-    private static final long TICKER_MIN = 10000;     // 字幕最小间隔
-    private static final long TICKER_RANGE = 10000;   // 字幕随机区间
+    private static final long TICKER_MIN = 6000;      // 字幕最小间隔
+    private static final long TICKER_RANGE = 6000;    // 字幕随机区间
     private static final long QR_DURATION = 8000;     // 二维码展示时长
+    private static final long PRELOAD_POSITION_MS = 30000; // 播放超过 30s 预热下一首
+    private static final long DIRECT_WATCHDOG_MS = 10000;  // 直连起播看门狗：10s 未起播视为不支持
+    private static final long HLS_WATCHDOG_MS = 15000;      // HLS 起播看门狗：15s 未真正起播（卡 BUFFERING）视为加载异常
+    private static final int HLS_WATCHDOG_MAX_TRIES = 2;    // HLS 看门狗最大重载次数，超限切下一首
 
-    private ExoPlayer player;
-    private PlayerView playerView;
+    private PlayerCore core;
+    private String coreKind = "media3";   // 当前活动内核
+    private boolean hlsFallback = false;  // 已回退到 HLS（直连失败/不支持）
+    private float volume = 1f;
+    private volatile boolean userPaused = false;
+    private long lastToggleAt = 0; // togglePlayLocal 防抖时间戳（控制端双发/连点时 300ms 内只响应一次）
+    private long lastVoiceAt = 0;  // switchVoice 远程广播防抖时间戳（多端重复广播 500ms 内只响应一次）
+    private float[] lastEqGains;   // 最近一次控制端下发的均衡器增益（切歌/切内核后重应用）
+
+    private androidx.media3.ui.PlayerView playerView;
+    private org.videolan.libvlc.util.VLCVideoLayout vlcView;
     private FrameLayout tickerHost;
     private TickerView ticker;
     private ImageView qrView;
@@ -80,6 +108,9 @@ public class MainActivity extends AppCompatActivity {
     private TextView effectToast;
     private Button btnPlay, btnRepeat, btnNext, btnVolDown, btnVolUp, btnVoice, btnScan, btnSettings;
     private CtrlWS ctrlWS;
+
+    // 随机播放临时开关（手机端点歌台 WS 消息置位；仅本次运行生效，不保存设置）
+    private Boolean suiji = false;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService exec = Executors.newSingleThreadExecutor();
@@ -115,18 +146,101 @@ public class MainActivity extends AppCompatActivity {
             if (effectToast != null) effectToast.setVisibility(View.GONE);
         }
     };
+    /** 直连起播看门狗：直连模式下 10s 未真正起播（解码不支持/卡死）→ 自动回退 HLS。
+     * 仅对"从未进入过播放状态"的起播失败生效；已正常播放过（含暂停恢复）不回退，
+     * 避免暂停后恢复失败被误判为"直连不支持"而跳 HLS。 */
+    private final Runnable directWatchdogRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!hlsFallback && "direct".equals(playMode())
+                    && core != null && !core.isPlaying() && !userPaused && playingSongId > 0
+                    && !directEverPlayed) {
+                fallbackToHls("直连播放无响应（可能不支持），已自动切换 HLS");
+            }
+        }
+    };
+
+    /** HLS 起播看门狗：Media3 卡 BUFFERING 时不会触发 onError（缓冲不是错误事件），
+     * 表现为一直转圈。起播后 15s 未真正进入播放 → 重载当前 HLS 流（转码完成/已缓存则秒开）；
+     * 重载超限仍无响应 → 切下一首，避免永久转圈。仅对"从未进入过播放状态"的起播生效。 */
+    private final Runnable hlsWatchdogRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (core == null || playingSongId <= 0 || userPaused || hlsEverPlayed) return;
+            if (!"hls".equals(playMode()) && !hlsFallback) return; // 仅 HLS 场景
+            Log.d(TAG, "HLS_WATCHDOG: tries=" + hlsWatchdogTries + " playing=" + core.isPlaying() + " userPaused=" + userPaused);
+            hlsWatchdogTries++;
+            if (hlsWatchdogTries > HLS_WATCHDOG_MAX_TRIES) {
+                hlsWatchdogTries = 0;
+                tvInfo.setText("播放无响应，已切下一首");
+                postNext();
+                return;
+            }
+            tvInfo.setText("加载较慢，正在重试…");
+            ensureCore("media3");
+            applyVoiceDefault();
+            core.play(hlsUrl(playingSongId));
+            startHlsWatchdog();
+        }
+    };
 
     private volatile long playingSongId = -1;
+    // 直连模式本首歌是否进入过真正播放（watchdog 据此避免暂停恢复失败被误判回退 HLS）
+    private volatile boolean directEverPlayed = false;
+    // HLS 模式本首歌是否进入过真正播放（HLS 看门狗据此避免已播后误重载）
+    private volatile boolean hlsEverPlayed = false;
+    // HLS 看门狗本首歌已重载次数（超过上限切下一首）
+    private volatile int hlsWatchdogTries = 0;
+    // 直连当前流相对歌曲的起始偏移（ms）：start 续播后播放器位置从 0 重计，
+    // 歌曲真实位置 = currentStreamOffsetMs + core.getPosition()，切音轨时累计。
+    private volatile long currentStreamOffsetMs = 0;
     private String nowPlaying = "";
     private String nowArtist = "";
     private String nextSong = "";
     private String nextArtist = "";
+    private long nextSongId = -1;
+    private long lastPreloadSongId = -1;   // 已预热过的下一曲 id
     private String welcome = "家悦K歌，唱响每一刻";
     private int tickerIdx = 0;
-    private int tickerStep = 1;   // 1=歌曲播报段 2=欢迎语段（网页版同款两段式）
+    private int tickerStep = 1;   // 1=歌曲播报段 2=欢迎语段
     private boolean voiceOriginal = true;   // 当前音轨：true=原唱(0) false=伴唱(1)
     private boolean voiceSpecified = false;  // 上一首是否被用户手动指定过音轨（「上次」模式用）
-    private int playerErrorCount = 0;
+    private volatile int playerErrorCount = 0;
+    // 内核代数：ensureCore 每次切换 +1。旧内核的异步事件回调（可能迟到）据此丢弃
+    private volatile int coreEpoch = 0;
+
+    private final PlayerCore.Listener coreListener = new PlayerCore.Listener() {
+        @Override
+        public void onEnded() {
+            // 播完自动切下一首（服务端按设置决定是否随机续播）。
+            // 延迟执行 + 校验内核代数：切换内核后到达的旧事件一律丢弃
+            final int epoch = coreEpoch;
+            ui.post(() -> {
+                if (epoch == coreEpoch) postNext();
+            });
+        }
+
+        @Override
+        public void onError(String message) {
+            // 直连失败/不支持 → 自动回退 HLS(Media3)；HLS 再失败 → 切歌，避免卡死。
+            // 延迟执行 + 校验内核代数：旧内核 release 时的错误事件不影响新内核
+            final int epoch = coreEpoch;
+            ui.post(() -> {
+                if (epoch != coreEpoch) return;
+                if (!hlsFallback && "direct".equals(playMode())) {
+                    fallbackToHls("直连播放失败，已自动切换 HLS");
+                    return;
+                }
+                playerErrorCount++;
+                if (playerErrorCount <= 3) {
+                    postNext();
+                } else {
+                    playerErrorCount = 0;
+                    tvInfo.setText("播放失败，等待下一首…");
+                }
+            });
+        }
+    };
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -136,6 +250,7 @@ public class MainActivity extends AppCompatActivity {
         enterImmersive();
 
         playerView = findViewById(R.id.playerView);
+        vlcView = findViewById(R.id.vlcView);
         tickerHost = findViewById(R.id.tickerHost);
         qrView = findViewById(R.id.qrView);
         effectToast = findViewById(R.id.effectToast);
@@ -160,11 +275,17 @@ public class MainActivity extends AppCompatActivity {
                 Gravity.TOP | Gravity.START));
         ticker.setOnFinishedListener(this::onTickerFinished);
 
-        setupPlayer();
+        // 升级迁移：v2 起默认 HLS 模式 + 直连默认 VLC（老版本默认 direct/media3 会被纠正）
+        migrateSettings();
+
+        // 先建好默认内核并挂到显示容器
+        SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+        ensureCore("hls".equals(sp.getString(KEY_PLAY_MODE, "hls"))
+                ? "media3" : sp.getString(KEY_CORE, "vlc"));
+        core.setVolume(volume);
         setupControls();
 
         // 服务器地址
-        SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
         String server = sp.getString(KEY_SERVER, "");
         if (server.isEmpty()) {
             showSettingsDialog();
@@ -174,31 +295,102 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void setupPlayer() {
-        player = new ExoPlayer.Builder(this).build();
-        playerView.setPlayer(player);
-        player.setPlayWhenReady(true);
-        player.addListener(new Player.Listener() {
-            @Override
-            public void onPlaybackStateChanged(int state) {
-                if (state == Player.STATE_ENDED) {
-                    // 播完自动切下一首（服务端按设置决定是否随机续播）
-                    postNext();
-                }
-            }
+    /** v2 设置迁移：老安装（默认 direct/media3）改为默认 HLS + 直连默认 VLC。 */
+    private void migrateSettings() {
+        SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+        int ver = sp.getInt(KEY_CFG_VER, 0);
+        if (ver >= CFG_VER_CURRENT) return;
+        sp.edit()
+                .putString(KEY_PLAY_MODE, "hls")
+                .putString(KEY_CORE, "vlc")
+                .putInt(KEY_CFG_VER, CFG_VER_CURRENT)
+                .apply();
+    }
 
-            @Override
-            public void onPlayerError(PlaybackException error) {
-                // 播放失败（硬解失败已自动回退软解；仍失败则切歌，避免卡死）
-                playerErrorCount++;
-                if (playerErrorCount <= 3) {
-                    postNext();
-                } else {
-                    playerErrorCount = 0;
-                    tvInfo.setText("播放失败，等待下一首…");
-                }
+    // ---------- 播放内核 ----------
+
+    private String playMode() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_PLAY_MODE, "hls");
+    }
+
+    /** 直连内核（默认 vlc）。HLS 模式固定 media3，不读此值。 */
+    private String directCore() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_CORE, "vlc");
+    }
+
+    private PlayerCore createCore(String kind) {
+        if ("vlc".equals(kind)) {
+            try {
+                return new VLCCore(this);
+            } catch (Throwable t) {
+                // VLC 库加载失败（so 缺失/JNI 不支持等）→ 回退 Media3，避免闪退
+                return new Media3Core(this);
             }
-        });
+        }
+        return new Media3Core(this);
+    }
+
+    /** 确保当前内核为指定类型（切换时先解绑监听再释放旧的，并重新挂载显示容器）。 */
+    private void ensureCore(String kind) {
+        if (core != null && coreKind.equals(kind)) return;
+        if (core != null) {
+            // 先解绑监听再 release：旧内核 release 时触发的异步事件（EndReached/EncounteredError）
+            // 不再回调 coreListener，避免干扰新内核的播放流程（点歌后被旧内核事件切歌/回退）
+            core.setListener(null);
+            core.release();
+            core = null;
+        }
+        coreEpoch++; // 旧内核的异步回调（含已排队 Runnable）全部失效
+        coreKind = kind;
+        core = createCore(kind);
+        core.setVolume(volume);
+        core.setListener(coreListener);
+        if ("vlc".equals(kind)) {
+            vlcView.setVisibility(View.VISIBLE);
+            playerView.setVisibility(View.GONE);
+            core.attach(vlcView);
+            applyFillScreen(); // 按设置应用画面缩放（VLC 直连：TextureView 等比放大裁剪）
+        } else {
+            playerView.setVisibility(View.VISIBLE);
+            vlcView.setVisibility(View.GONE);
+            core.attach(playerView);
+            applyFillScreen(); // 按设置应用画面缩放（HLS/Media3 内核）
+        }
+    }
+
+    /** 播放画面撑满屏幕缩放开关：Media3(HLS) 用 ZOOM 裁剪；VLC(直连) 用原生 SURFACE_FILL 等比放大裁剪。 */
+    private void applyFillScreen() {
+        try {
+            boolean fill = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_FILL_SCREEN, false);
+            if (core == null) return;
+            if (!"vlc".equals(coreKind)) {
+                playerView.setResizeMode(fill
+                        ? AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        : AspectRatioFrameLayout.RESIZE_MODE_FIT);
+            } else {
+                core.setFillScreen(fill);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private String hlsUrl(long sid) {
+        return Api.base + "/hls/" + sid + "/master.m3u8";
+    }
+
+    /** 直连流 URL；startMs>0 时带起始位置参数（服务端 ffmpeg -ss 从该位置开始转码输出）。 */
+    private String streamUrl(long sid, int track, long startMs) {
+        String u = track >= 0
+                ? (Api.base + "/stream/" + sid + "?track=" + track)
+                : (Api.base + "/stream/" + sid);
+        if (startMs > 0) {
+            u += (u.contains("?") ? "&" : "?") + "start=" + startMs;
+        }
+        return u;
+    }
+
+    private String streamUrl(long sid, int track) {
+        return streamUrl(sid, track, -1);
     }
 
     private void setupControls() {
@@ -215,25 +407,29 @@ public class MainActivity extends AppCompatActivity {
             touch();
         });
         btnVolDown.setOnClickListener(v -> {
-            if (player != null) {
-                player.setVolume(Math.max(0f, player.getVolume() - 0.2f));
-                tvInfo.setText("音量 " + Math.round(player.getVolume() * 100) + "%");
-            }
+            volume = Math.max(0f, volume - 0.2f);
+            core.setVolume(volume);
+            tvInfo.setText("音量 " + Math.round(volume * 100) + "%");
             touch();
         });
         btnVolUp.setOnClickListener(v -> {
-            if (player != null) {
-                player.setVolume(Math.min(1f, player.getVolume() + 0.2f));
-                tvInfo.setText("音量 " + Math.round(player.getVolume() * 100) + "%");
-            }
+            volume = Math.min(1f, volume + 0.2f);
+            core.setVolume(volume);
+            tvInfo.setText("音量 " + Math.round(volume * 100) + "%");
             touch();
         });
         btnVoice.setOnClickListener(v -> {
-            switchVoice();
+            switchVoice("", true); // 本地按钮：切换并上报
             touch();
         });
         btnScan.setOnClickListener(v -> {
-            showQr();
+            // 扫码按钮：显示则隐藏、隐藏则显示（8s 临时）——toggle 语义独立于待机常显
+            if (qrView.getVisibility() == View.VISIBLE) {
+                qrView.setVisibility(View.GONE);
+                ui.removeCallbacks(qrRunnable);
+            } else {
+                showQr(false);
+            }
             touch();
         });
         btnSettings.setOnClickListener(v -> {
@@ -253,23 +449,136 @@ public class MainActivity extends AppCompatActivity {
 
     // ---------- 播放与状态 ----------
 
-    /** 播放/暂停切换（本地按钮与控制端共用）。 */
+    private long lastRandomFillAt = 0;
+    private boolean randomFilling = false;
+    /** 随机播放"人在使用"的最后活跃时间：遥控/触摸/手机端消息/服务端新点歌任一发生即刷新；
+     *  超过设置的空闲分钟数无任何活跃 → maybeRandomFill 自动关闭随机（防空转吃 CPU）。 */
+    private volatile long lastActiveAt = System.currentTimeMillis();
+
+    /** 随机空闲自动停止时长（分钟）：设置可配，0=不自动停止，默认 30。 */
+    private int getRandomIdleMin() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE).getInt(KEY_RANDOM_IDLE_MIN, RANDOM_IDLE_DEFAULT_MIN);
+    }
+
+    /** 标记"有人在用"：任何本地/远端操作都刷新活跃时间，随机播放据此续播。 */
+    private void markActive() {
+        lastActiveAt = System.currentTimeMillis();
+    }
+
+    /** 随机播放：队列空时从服务端随机拿一首入队（仅 suiji 开启时调用，不写服务端设置）。
+     * 手机端点歌台发 WS control random 置位 suiji；队列播空后由本端轮询随机补曲，
+     * 实现持续随机播放；补曲入队广播后 pollState 拉到 playing 即进入播放。
+     * 空闲保护（服务端零改动）：补曲前检测服务端 /api/player/state 的 queue，
+     * waiting>0（有人点歌排队）刷新活跃时间；超过设置的空闲分钟数无任何活跃
+     * （遥控/触摸/手机消息/新点歌均无）→ 自动 suiji=false 停止随机，释放服务端转码。 */
+    private void maybeRandomFill() {
+        if (!Boolean.TRUE.equals(suiji) || randomFilling) return;
+        long now = System.currentTimeMillis();
+        if (now - lastRandomFillAt < 4000) return; // 防抖：避免轮询空转重复入队
+        lastRandomFillAt = now;
+        randomFilling = true;
+        exec.execute(() -> {
+            try {
+                // 检测服务端队列 waiting：有人在点歌排队 = 有人在用，刷新活跃时间
+                try {
+                    Api.HttpResult sr = Api.get("/api/player/state");
+                    if (sr.code == 200) {
+                        JSONArray q = new JSONObject(sr.body).optJSONArray("queue");
+                        if (q != null) {
+                            for (int i = 0; i < q.length(); i++) {
+                                if ("waiting".equals(q.getJSONObject(i).optString("status"))) {
+                                    lastActiveAt = System.currentTimeMillis();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+                // 空闲超时保护：超过设置分钟数无人使用 → 自动关闭随机（0=不自动停止）
+                int idleMin = getRandomIdleMin();
+                if (idleMin > 0 && now - lastActiveAt > idleMin * 60000L) {
+                    suiji = false;
+                    randomFilling = false;
+                    Log.d(TAG, "random auto-stop: 空闲" + idleMin + "分钟无操作，自动关闭随机");
+                    ui.post(() -> tvInfo.setText("随机播放已暂停（" + idleMin + "分钟无操作）"));
+                    return; // 不再补曲
+                }
+                Api.HttpResult rs = Api.get("/api/songs");
+                if (rs.code != 200) return;
+                JSONArray arr;
+                try {
+                    arr = new JSONArray(rs.body);
+                } catch (Exception e) {
+                    arr = new JSONObject(rs.body).optJSONArray("data");
+                }
+                if (arr == null || arr.length() == 0) return;
+                long pick = arr.getJSONObject((int) (Math.random() * arr.length())).optLong("id", -1);
+                if (pick > 0) {
+                    JSONObject b = new JSONObject();
+                    b.put("song_id", pick);
+                    b.put("nickname", "随机播放");
+                    Api.post("/api/queue", b);
+                    Log.d(TAG, "randomFill: pick=" + pick);
+                }
+            } catch (Exception ignored) {
+            } finally {
+                randomFilling = false;
+            }
+        });
+    }
+
+    /** 播放/暂停切换（本地按钮与控制端共用）。
+     * userPaused 标记过 → 无条件恢复（VLC/Media3 的 resume 在播放中均无害忽略，
+     * 避免 VLC 暂停后 isPlaying() 异步未更新导致误走同步分支而不恢复）；
+     * 播放中 → 暂停；缓冲/未起播 → 也执行暂停意图（Media3 playWhenReady=false
+     * 缓冲完自动停；VLC 直连起播快此分支罕见）。 */
     private void togglePlayLocal() {
-        if (player == null) return;
-        if (player.getPlayWhenReady()) {
-            player.pause();
+        if (core == null) return;
+        long now = System.currentTimeMillis();
+        // 防抖：控制端一次点击偶尔会到达 2 条 play_pause（双端/连点），
+        // 若不拦截会"暂停→立即恢复"打架；300ms 内只响应第一次。
+        if (now - lastToggleAt < 300) {
+            Log.d(TAG, "togglePlay: debounced");
+            return;
+        }
+        lastToggleAt = now;
+        Log.d(TAG, "togglePlay: userPaused=" + userPaused + " playing=" + core.isPlaying() + " kind=" + coreKind);
+        if (userPaused) {
+            core.resume();
+            userPaused = false;
+            btnPlay.setText("暂停");
+        } else if (core.isPlaying()) {
+            core.pause();
+            userPaused = true;
             btnPlay.setText("播放");
         } else {
-            player.play();
-            btnPlay.setText("暂停");
+            // 缓冲/未起播：执行暂停意图
+            core.pause();
+            userPaused = true;
+            btnPlay.setText("播放");
+        }
+        sendState();
+    }
+
+    /** 上报播放状态给控制端（手机/平板按钮图标据此实时同步，避免"按钮状态与 TV 实际不符"）。 */
+    private void sendState() {
+        if (ctrlWS == null) return;
+        try {
+            JSONObject o = new JSONObject();
+            o.put("type", "state");
+            o.put("paused", userPaused);
+            o.put("voice", voiceOriginal ? "original" : "accompaniment");
+            ctrlWS.send(o.toString());
+        } catch (Exception ignored) {
         }
     }
 
     /** 重唱：回到歌曲开头重新播放（本地按钮与控制端共用）。 */
     private void repeatLocal() {
-        if (player != null) {
-            player.seekTo(0);
-            player.play();
+        if (core != null) {
+            core.seekTo(0);
+            core.resume();
             btnPlay.setText("暂停");
         }
     }
@@ -286,11 +595,17 @@ public class MainActivity extends AppCompatActivity {
             public void onEffect(String effect, String nickname) {
                 handleEffect(effect, nickname);
             }
+
+            @Override
+            public void onQueueChanged() {
+                // 点歌/置顶/删歌等队列变化：立即刷新状态，避免字幕"下一曲"信息滞后
+                pollState();
+            }
         });
         ctrlWS.connect();
     }
 
-    /** 氛围互动：播放原生音效 + 顶部浮层（仿网页 TV：#effect-toast）。 */
+    /** 氛围互动：播放原生音效 + 顶部浮层。 */
     private void handleEffect(String effect, String nickname) {
         int resId;
         String label;
@@ -305,10 +620,10 @@ public class MainActivity extends AppCompatActivity {
         }
         String who = (nickname == null || nickname.isEmpty()) ? "匿名歌手" : nickname;
         showEffectToast("🎉 " + who + " · " + label);
-        playEffectSfx(resId, player != null ? player.getVolume() : 1f);
+        playEffectSfx(resId, volume);
     }
 
-    /** 浮层：顶部居中弹出，2.6 秒后消失（与网页版一致）。 */
+    /** 浮层：顶部居中弹出，2.6 秒后消失。 */
     private void showEffectToast(String text) {
         if (effectToast == null) return;
         effectToast.setText(text);
@@ -333,12 +648,20 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void handleControl(String action, JSONObject msg) {
+        markActive(); // 收到手机端指令 = 有人在用
+        Log.d(TAG, "handleControl: " + action);
         switch (action) {
             case "play_pause":
                 togglePlayLocal();
                 break;
             case "voice":
-                switchVoice();
+                // 只响应与当前播放歌曲匹配的切音轨指令（避免网页/其他播放端广播干扰）。
+                // 广播指令只执行切换、不回发上报（见 switchVoice fromUser 参数），
+                // 避免"广播→上报→再广播"死循环导致疯狂切伴奏。
+                long vsid = msg.optLong("song_id", -1);
+                if (vsid <= 0 || vsid == playingSongId) {
+                    switchVoice(msg.optString("to", ""), false);
+                }
                 break;
             case "repeat":
                 repeatLocal();
@@ -347,13 +670,32 @@ public class MainActivity extends AppCompatActivity {
                 postNext();
                 break;
             case "volume_up":
-                if (player != null) player.setVolume(Math.min(1f, player.getVolume() + 0.1f));
+                volume = Math.min(1f, volume + 0.1f);
+                core.setVolume(volume);
                 break;
             case "volume_down":
-                if (player != null) player.setVolume(Math.max(0f, player.getVolume() - 0.1f));
+                volume = Math.max(0f, volume - 0.1f);
+                core.setVolume(volume);
+                break;
+            case "eq":
+                // 控制端均衡器：{action:'eq', gains:[10段dB], preset}
+                JSONArray eqa = msg.optJSONArray("gains");
+                if (eqa != null && eqa.length() > 0) {
+                    float[] gains = new float[eqa.length()];
+                    for (int i = 0; i < eqa.length(); i++) {
+                        gains[i] = (float) eqa.optDouble(i, 0);
+                    }
+                    lastEqGains = gains;
+                    if (core != null) core.setEqualizer(gains);
+                    Log.d(TAG, "eq applied: " + gains.length + " bands, preset=" + msg.optString("preset", ""));
+                }
+                break;
+            case "random":
+                // 手机端点歌台随机开关：{action:'random', on:true/false} → 本地临时置位（不保存）
+                suiji = msg.optBoolean("on", !Boolean.TRUE.equals(suiji));
+                Log.d(TAG, "suiji=" + suiji);
                 break;
             default:
-                // eq/fullscreen/home/focus_* 等已随手机端遥控入口下线的动作忽略
                 break;
         }
     }
@@ -381,6 +723,7 @@ public class MainActivity extends AppCompatActivity {
                 JSONObject playing = data.optJSONObject("playing");
                 long sid = -1;
                 String title = "", artist = "", ntitle = "", nartist = "";
+                long nid = -1;
                 if (playing != null) {
                     sid = playing.optLong("song_id");
                     title = playing.optString("title", "");
@@ -388,73 +731,178 @@ public class MainActivity extends AppCompatActivity {
                 }
                 JSONObject next = data.optJSONObject("next");
                 if (next != null) {
+                    nid = next.optLong("song_id", -1);
                     ntitle = next.optString("title", "");
                     nartist = next.optString("artist", "");
                 }
                 final long fSid = sid;
                 final String fTitle = title, fArtist = artist, fNTitle = ntitle, fNArtist = nartist;
-                ui.post(() -> onState(fSid, fTitle, fArtist, fNTitle, fNArtist));
+                final long fNid = nid;
+                ui.post(() -> {
+                    applyFillScreen(); // 每轮轮询应用画面缩放：VLC 视频尺寸就绪后自动生效
+                    onState(fSid, fTitle, fArtist, fNTitle, fNArtist, fNid);
+                });
             } catch (Exception e) {
                 ui.post(() -> tvInfo.setText("服务器连接中…"));
             }
         });
     }
 
-    private void onState(long sid, String title, String artist, String ntitle, String nartist) {
+    private void onState(long sid, String title, String artist, String ntitle, String nartist, long nid) {
+        Log.d(TAG, "onState: sid=" + sid + " cur=" + playingSongId
+                + " corePlaying=" + (core != null && core.isPlaying()) + " userPaused=" + userPaused
+                + " hlsEver=" + hlsEverPlayed);
+        // 轮询检测到真正播放 → 标记"已播放过"（直连 watchdog 不再回退 HLS，HLS 看门狗不再重载）
+        if (core != null && core.isPlaying()) {
+            directEverPlayed = true;
+            hlsEverPlayed = true;
+            cancelHlsWatchdog();
+        }
         nowPlaying = title;
         nowArtist = artist;
         nextSong = ntitle;
         nextArtist = nartist;
+        nextSongId = nid;
         if (sid <= 0) {
+            // 无播放歌曲（未点歌 / 切完最后一首）：随机开关开启则自动随机补一首，
+            // 不依赖服务端 autoplay_random 设置（临时开关不保存，纯客户端行为）。
+            if (Boolean.TRUE.equals(suiji)) {
+                maybeRandomFill();
+            }
             // 无播放歌曲（未点歌 / 切完最后一首且不随机）：显示待机大屏并停止播放
             showIdle();
             tvInfo.setText("请点歌");
             playingSongId = -1;
             btnPlay.setText("暂停");
-            if (player != null) {
-                player.stop();
-                player.clearMediaItems();
+            cancelDirectWatchdog();
+            cancelHlsWatchdog();
+            if (core != null) {
+                core.stop();
             }
             return;
         }
         hideIdle();
         tvInfo.setText("正在播放：" + (title.isEmpty() ? "请点歌" : title + " - " + artist));
         if (sid != playingSongId) {
+            Log.d(TAG, "PLAY_SONG: sid=" + sid + " reason=state-change hlsFallback=" + hlsFallback);
             playingSongId = sid;
-            if (player != null) {
-                playerErrorCount = 0;
-                btnPlay.setText("暂停");
-                // 从 0 位置起播（AV1/长关键帧间隔源兜底，防止跳到中间）。
-                // 渐进式转码的 event playlist 在转码完成前没有 ENDLIST，ExoPlayer
-                // 会把它当 live 流从"live edge（末尾）"起播 → 表现为首次播放从中间开始。
-                // 设置超大的 targetOffsetMs（24h）强制从最老分片（=歌曲开头）起播，
-                // 转码完成（有 ENDLIST）后自动回到 VOD 正常从头播放。
-                MediaItem item = new MediaItem.Builder()
-                        .setUri(Api.base + "/hls/" + sid + "/master.m3u8")
-                        .setLiveConfiguration(new MediaItem.LiveConfiguration.Builder()
-                                .setTargetOffsetMs(24L * 60 * 60 * 1000)
-                                .build())
-                        .build();
-                player.setMediaItem(item, 0);
-                player.prepare();
-                player.play();
-                // 按「切歌默认请求」设置应用音轨默认（伴唱/原唱/上次）
-                applyVoiceDefault();
+            hlsFallback = false;
+            userPaused = false;
+            lastPreloadSongId = -1;
+            playerErrorCount = 0;
+            btnPlay.setText("暂停");
+            playSong(sid);
+        } else if (core != null) {
+            // 播放超过 30s：预热下一首转码缓存（切歌秒开）        、
+            try {
+                String mode = playMode();
+                // 仅 HLS 模式 / HLS自动回退场景执行预加载；direct直连模式跳过预加载
+                if ((!"direct".equals(mode) || hlsFallback)
+                        && nid > 0 && nid != lastPreloadSongId && core.getPosition() > PRELOAD_POSITION_MS) {
+                    lastPreloadSongId = nid;
+                    preloadSong(nid);
+                }
+            } catch (Exception ignored) {
             }
+        }
+        }
+
+    /** 按当前模式播放：HLS(Media3) 或 直连(directCore，默认 VLC)。 */
+    private void playSong(long sid) {
+        if ("hls".equals(playMode()) || hlsFallback) {
+            ensureCore("media3");
+            // 先应用音轨默认再起播：Media3 TrackSelector 起播即目标音轨，避免起播后再切换
+            applyVoiceDefault();
+            core.play(hlsUrl(sid));
+            cancelDirectWatchdog();
+            // HLS 起播看门狗：卡 BUFFERING 不报错，超时自动重载/切歌，避免永久转圈
+            hlsEverPlayed = false;
+            hlsWatchdogTries = 0;
+            startHlsWatchdog();
+        } else {
+            ensureCore(directCore());
+            currentStreamOffsetMs = 0;
+            directEverPlayed = false; // 新歌直连：重置"曾播放"标志
+            // 先应用音轨默认再起播：VLC 用 :audio-track 预选目标音轨，起播即目标音轨（不转码、不后切）
+            applyVoiceDefault();
+            core.play(streamUrl(sid, -1));
+            startDirectWatchdog();
+        }
+        sendState(); // 切歌起播后同步状态给控制端（paused=false）
+        if (lastEqGains != null) core.setEqualizer(lastEqGains); // 切内核/新歌后重应用均衡器
+    }
+
+    /** 直连失败/不支持 → 自动回退 HLS(Media3)，同歌续播。 */
+    private void fallbackToHls(String msg) {
+        hlsFallback = true;
+        playerErrorCount = 0;
+        cancelDirectWatchdog();
+        tvInfo.setText(msg);
+        ensureCore("media3");
+        long sid = playingSongId;
+        if (sid > 0) {
+            applyVoiceDefault();
+            core.play(hlsUrl(sid));
+            hlsEverPlayed = false;
+            hlsWatchdogTries = 0;
+            startHlsWatchdog();
         }
     }
 
-    /** 显示待机大屏（仿网页 TV：家悦K歌 logo + 播放端已就绪）。 */
+    private void startHlsWatchdog() {
+        ui.removeCallbacks(hlsWatchdogRunnable);
+        ui.postDelayed(hlsWatchdogRunnable, HLS_WATCHDOG_MS);
+    }
+
+    private void cancelHlsWatchdog() {
+        ui.removeCallbacks(hlsWatchdogRunnable);
+    }
+
+    private void startDirectWatchdog() {
+        ui.removeCallbacks(directWatchdogRunnable);
+        ui.postDelayed(directWatchdogRunnable, DIRECT_WATCHDOG_MS);
+    }
+
+    private void cancelDirectWatchdog() {
+        ui.removeCallbacks(directWatchdogRunnable);
+    }
+
+    private void preloadSong(long songId) {
+        exec.execute(() -> {
+            try {
+                JSONObject b = new JSONObject();
+                b.put("song_id", songId);
+                Api.post("/api/preload", b);
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
+    /** 显示待机大屏（仿网页 TV：家悦K歌 logo + 播放端已就绪），并默认显示右上角点歌二维码。 */
     private void showIdle() {
         if (idleView != null && idleView.getVisibility() != View.VISIBLE) {
             applyLogoGradient();
             idleView.setVisibility(View.VISIBLE);
+        }
+        showQr(true); // 无人点歌：右上角二维码常显
+        // 滚动字幕避开右上角二维码区域（只滚到二维码左侧）
+        if (tickerHost != null) {
+            tickerHost.setPadding(tickerHost.getPaddingLeft(), tickerHost.getPaddingTop(), dp(190), tickerHost.getPaddingBottom());
         }
     }
 
     private void hideIdle() {
         if (idleView != null && idleView.getVisibility() == View.VISIBLE) {
             idleView.setVisibility(View.GONE);
+        }
+        // 进入播放：隐藏待机二维码
+        if (qrView.getVisibility() == View.VISIBLE) {
+            qrView.setVisibility(View.GONE);
+            ui.removeCallbacks(qrRunnable);
+        }
+        // 播放时滚动字幕恢复满宽
+        if (tickerHost != null) {
+            tickerHost.setPadding(tickerHost.getPaddingLeft(), tickerHost.getPaddingTop(), 0, tickerHost.getPaddingBottom());
         }
     }
 
@@ -470,7 +918,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /** 切下一首：通知服务端后延迟轮询。 */
+    private long lastNextAt = 0;
+
     private void postNext() {
+        Log.d(TAG, "postNext: from=" + Thread.currentThread().getStackTrace()[2].getMethodName());
+        long now = System.currentTimeMillis();
+        if (now - lastNextAt < 800) return; // 防抖：800ms 内重复切歌忽略（防遥控连点跳多首）
+        lastNextAt = now;
         exec.execute(() -> {
             try {
                 Api.post("/api/queue/next", new JSONObject());
@@ -483,14 +937,53 @@ public class MainActivity extends AppCompatActivity {
         }, 600);
     }
 
-    /** 原唱/伴唱：HLS 多音轨切换。 */
-    private void switchVoice() {
+    /**
+     * 原唱/伴唱切换。to 为空=按钮翻转；to=original/accompaniment=按目标切（控制端指令）。
+     * fromUser=true（本地按钮）→ 切换并上报服务端；fromUser=false（WS 广播指令）→
+     * 只执行切换、不回发上报，避免"广播→上报→再广播"死循环（疯狂切伴奏）。
+     * HLS 走 TrackSelector 原位无缝切换；直连(VLC) 走源文件双音轨原生切换（不转码、不换内核）。
+     */
+    private void switchVoice(String to, boolean fromUser) {
+        // 远程广播防抖：控制端多端/多连接重复点击时，一次操作会到达多条 voice
+        //（实测一次点击 4 条、2ms 内），而"切换"是翻转语义，多条会互相抵消
+        // → 表现为"切不了"。500ms 内只响应第一条远程指令，本地按键不受限。
+        if (!fromUser) {
+            long now = System.currentTimeMillis();
+            if (now - lastVoiceAt < 500) {
+                Log.d(TAG, "switchVoice: debounced");
+                return;
+            }
+            lastVoiceAt = now;
+        }
         voiceSpecified = true; // 用户手动指定过音轨，「上次」模式据此沿用
-        int target = voiceOriginal ? 1 : 0;
-        voiceOriginal = !voiceOriginal;
+        Log.d(TAG, "switchVoice: to=" + to + " fromUser=" + fromUser + " cur=" + (voiceOriginal ? "original" : "accompaniment"));
+        int target;
+        if ("accompaniment".equals(to)) {
+            target = 1;
+            voiceOriginal = false;
+        } else if ("original".equals(to)) {
+            target = 0;
+            voiceOriginal = true;
+        } else {
+            target = voiceOriginal ? 1 : 0; // 按钮翻转
+            voiceOriginal = !voiceOriginal;
+        }
         btnVoice.setText(voiceOriginal ? "伴唱" : "原唱");
-        switchVoiceTrack(target);
+
+        // 音轨切换统一走内核原生切换，不换内核、不转码：
+        // HLS(Media3) → TrackSelector 原位无缝切换；直连(VLC) → 源文件双音轨原生 setAudioTrack。
+        core.setAudioTrack(target);
+
+        if (fromUser) {
+            reportVoiceSwitch(target);
+        }
+        sendState(); // 同步音轨状态给控制端（手机端原/伴唱高亮）
+    }
+
+    /** 上报音轨切换给服务端（仅本地用户操作时调用）。 */
+    private void reportVoiceSwitch(int target) {
         long sid = playingSongId;
+        if (sid <= 0) return;
         exec.execute(() -> {
             try {
                 JSONObject body = new JSONObject();
@@ -503,6 +996,12 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    /** 应用音轨：统一走内核原生切换（HLS→TrackSelector；直连→VLC 原生，服务端不转码）。 */
+    private void applyVoiceTrack(int track) {
+        if (core == null || playingSongId <= 0) return;
+        core.setAudioTrack(track);
+    }
+
     /** 切歌默认请求：新歌加载后按设置应用音轨。
      *  伴唱(accompaniment)：一律切伴唱；原唱(original)：一律原唱；
      *  上次(last)：沿用上一首的音轨，上一首没被手动指定过则默认伴奏。 */
@@ -511,98 +1010,22 @@ public class MainActivity extends AppCompatActivity {
         if ("original".equals(def)) {
             voiceOriginal = true;
             btnVoice.setText("伴唱");
-            switchVoiceTrack(0);
+            applyVoiceTrack(0);
         } else if ("accompaniment".equals(def)) {
             voiceOriginal = false;
             btnVoice.setText("原唱");
-            switchVoiceTrack(1);
+            applyVoiceTrack(1);
         } else { // last
             if (voiceSpecified) {
                 // 上一首被指定过：沿用其音轨
-                if (!voiceOriginal) switchVoiceTrack(1);
+                if (!voiceOriginal) applyVoiceTrack(1);
             } else {
                 // 上一首没指定：默认伴奏
                 voiceOriginal = false;
                 btnVoice.setText("原唱");
-                switchVoiceTrack(1);
+                applyVoiceTrack(1);
             }
         }
-    }
-
-    private void switchVoiceTrack(int trackIndex) {
-        switchVoiceTrackAttempt(trackIndex, 0);
-    }
-
-    /** 带重试的音轨切换：Tracks 未就绪时 300ms 后重试，最多 5 次。 */
-    private void switchVoiceTrackAttempt(final int trackIndex, final int attempt) {
-        if (player == null) return;
-        int state = tryApplyVoiceTrack(player, trackIndex);
-        if (state == 1) {
-            return; // 已切换
-        }
-        if (state == 0) {
-            tvInfo.setText((trackIndex == 1 ? "未找到伴唱音轨" : "未找到原唱音轨") + "（" + voiceDiag + "）");
-            return;
-        }
-        if (attempt < 5) {
-            ui.postDelayed(() -> switchVoiceTrackAttempt(trackIndex, attempt + 1), 300);
-        } else {
-            tvInfo.setText("音轨切换失败，请稍后重试");
-        }
-    }
-
-    /** 诊断：音频组结构（组数/每组音轨数/label）。 */
-    private String voiceDiag = "";
-
-    /**
-     * 尝试切换音轨。兼容两种 HLS 结构：
-     *   a) 单音频组内含全部音轨（length>1，override 组内索引）；
-     *   b) 每个音轨各自成组（length=1，按 label/format 识别原唱/伴唱组后 override）。
-     * 返回 1=已切换 0=有音频组但无匹配音轨 -1=Tracks 未就绪。
-     */
-    private int tryApplyVoiceTrack(ExoPlayer p, int trackIndex) {
-        Tracks tracks = p.getCurrentTracks();
-        if (tracks == null) return -1;
-        int audioGroups = 0;
-        boolean applied = false;
-        StringBuilder diag = new StringBuilder();
-        for (Tracks.Group g : tracks.getGroups()) {
-            if (g.getType() != C.TRACK_TYPE_AUDIO) continue;
-            audioGroups++;
-            TrackGroup group = g.getMediaTrackGroup();
-            Format f = group.getFormat(0);
-            diag.append("组").append(audioGroups).append("=").append(group.length);
-            if (f.label != null && !f.label.isEmpty()) diag.append("/").append(f.label);
-            diag.append(";");
-            if (group.length > 1) {
-                // 结构 a：同组多音轨，override 组内索引
-                p.setTrackSelectionParameters(p.getTrackSelectionParameters().buildUpon()
-                        .setOverrideForType(new TrackSelectionOverride(group, trackIndex))
-                        .build());
-                applied = true;
-                continue;
-            }
-            // 结构 b：单条音轨组，按 label/format 识别
-            String label = f.label == null ? "" : f.label;
-            String fid = f.id == null ? "" : f.id;
-            boolean isAcc = label.contains("伴唱") || fid.contains("audio1") || fid.endsWith("/1");
-            boolean isOrig = label.contains("原唱") || fid.contains("audio0") || fid.endsWith("/0");
-            if (trackIndex == 1 && isAcc) {
-                p.setTrackSelectionParameters(p.getTrackSelectionParameters().buildUpon()
-                        .setOverrideForType(new TrackSelectionOverride(group, 0))
-                        .build());
-                applied = true;
-            } else if (trackIndex == 0 && isOrig) {
-                // 之前可能已 override 到伴唱组，切回原唱必须重新 override 原唱组
-                p.setTrackSelectionParameters(p.getTrackSelectionParameters().buildUpon()
-                        .setOverrideForType(new TrackSelectionOverride(group, 0))
-                        .build());
-                applied = true;
-            }
-        }
-        voiceDiag = diag.toString();
-        if (applied) return 1;
-        return audioGroups > 0 ? 0 : -1;
     }
 
     // ---------- 悬浮控制层 ----------
@@ -628,6 +1051,7 @@ public class MainActivity extends AppCompatActivity {
 
     /** 任意操作后调用：重置自动隐藏计时。 */
     private void touch() {
+        markActive(); // 屏幕点击 = 有人在用
         if (controlBar.getVisibility() != View.VISIBLE) showControls();
         else resetHideTimer();
     }
@@ -635,6 +1059,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            markActive(); // 遥控按键 = 有人在用
             switch (event.getKeyCode()) {
                 case KeyEvent.KEYCODE_BACK:
                     showExitDialog();
@@ -646,15 +1071,10 @@ public class MainActivity extends AppCompatActivity {
                 case KeyEvent.KEYCODE_DPAD_DOWN:
                 case KeyEvent.KEYCODE_DPAD_LEFT:
                 case KeyEvent.KEYCODE_DPAD_RIGHT:
-                    // 控制层隐藏时：方向键先唤出控制层（之后按键正常移动焦点）
                     if (controlBar.getVisibility() != View.VISIBLE) {
                         showControls();
                         return true;
                     }
-                    break;
-                case KeyEvent.KEYCODE_DPAD_CENTER:
-                case KeyEvent.KEYCODE_ENTER:
-                    // 确认键：交给当前聚焦控件处理
                     break;
                 default:
                     break;
@@ -675,13 +1095,19 @@ public class MainActivity extends AppCompatActivity {
 
     // ---------- 扫码 ----------
 
-    /** 扫码：显示则隐藏，隐藏则显示（右上角二维码）。 */
-    private void showQr() {
+    /** 扫码：显示则隐藏，隐藏则显示（右上角二维码）。
+     * persistent=true 常显（待机大屏默认显示，不自动隐藏，已显示时不重建——避免闪烁）；
+     * false 为点按临时显示，8s 后自动隐藏。 */
+    private void showQr(boolean persistent) {
         if (qrView.getVisibility() == View.VISIBLE) {
-            qrView.setVisibility(View.GONE);
+            // 已显示：不 toggle、不重建（showIdle 反复调用不再导致一闪一闪）
             ui.removeCallbacks(qrRunnable);
+            if (!persistent) {
+                ui.postDelayed(qrRunnable, QR_DURATION);
+            }
             return;
         }
+        if (Api.base.isEmpty()) return;
         String url = Api.base + "/m/";
         try {
             QRCodeWriter w = new QRCodeWriter();
@@ -695,7 +1121,9 @@ public class MainActivity extends AppCompatActivity {
             qrView.setImageBitmap(bmp);
             qrView.setVisibility(View.VISIBLE);
             ui.removeCallbacks(qrRunnable);
-            ui.postDelayed(qrRunnable, QR_DURATION);
+            if (!persistent) {
+                ui.postDelayed(qrRunnable, QR_DURATION);
+            }
         } catch (Exception e) {
             Toast.makeText(this, "二维码生成失败", Toast.LENGTH_SHORT).show();
         }
@@ -737,7 +1165,7 @@ public class MainActivity extends AppCompatActivity {
         return sb;
     }
 
-    /** 字幕跑完一段后：先接欢迎语段，全部播完再等 10~20 秒随机间隔出现。 */
+    /** 字幕跑完一段后：先接欢迎语段，全部播完再等随机间隔出现。 */
     private void onTickerFinished() {
         if (tickerStep == 1) {
             tickerStep = 2;
@@ -761,9 +1189,10 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ---------- 设置（服务器地址 / 播完随机播放） ----------
+    // ---------- 设置 ----------
 
-    /** 设置页：改 IP + 播完随机播放开关（默认关闭，手动开启）。 */
+    /** 设置页：服务器地址 + 播放模式(HLS 默认) + 播完随机播放 + 切歌默认请求。
+     *  直连模式固定 VLC 内核，HLS 固定 Media3。 */
     private void showSettingsDialog() {
         SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
         String cur = sp.getString(KEY_SERVER, "");
@@ -772,47 +1201,118 @@ public class MainActivity extends AppCompatActivity {
         root.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(24);
         root.setPadding(pad, pad / 2, pad, 0);
+        ScrollView sv = new ScrollView(this);
+        sv.setFillViewport(true);
+        sv.setFocusable(false); // TV 遥控：ScrollView 不抢焦点，方向键直接进入内部控件（否则焦点会跳到对话框按钮、跳过单选组）
+        sv.addView(root);
 
+        // 服务器地址
         TextView t1 = new TextView(this);
         t1.setText("服务器地址（IP:端口）");
+        t1.setTextColor(Color.WHITE);
         EditText et = new EditText(this);
         et.setHint("例如 192.168.1.100:8086");
+        et.setHintTextColor(0xFF8A8AA3);
+        et.setTextColor(Color.WHITE);
         et.setText(cur.replace("http://", ""));
         root.addView(t1);
         root.addView(et);
 
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setClickable(true);
-        row.setFocusable(true);
-        row.setPadding(0, dp(6), 0, dp(6));
-        TextView t2 = new TextView(this);
-        t2.setText("播完随机播放");
-        LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        t2.setLayoutParams(lp2);
-        SwitchCompat sw = new SwitchCompat(this);
-        sw.setClickable(true);
-        sw.setFocusable(true);
-        row.addView(t2);
-        row.addView(sw);
-        root.addView(row);
-        // 整行可点：点文字也能开关（Switch 本体点击区域太小，遥控器/手指容易点空）
-        row.setOnClickListener(v -> sw.toggle());
+        // 扫描服务端（端口默认 8086）
+        LinearLayout scanRow = new LinearLayout(this);
+        scanRow.setGravity(Gravity.CENTER_VERTICAL);
+        scanRow.setOrientation(LinearLayout.HORIZONTAL);
+        EditText etPort = new EditText(this);
+        etPort.setHint("端口");
+        etPort.setHintTextColor(0xFF8A8AA3);
+        etPort.setTextColor(Color.WHITE);
+        etPort.setText("8086");
+        etPort.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        etPort.setLayoutParams(new LinearLayout.LayoutParams(dp(90), LinearLayout.LayoutParams.WRAP_CONTENT));
+        Button btnScan = new Button(this);
+        btnScan.setText("扫描服务端");
+        btnScan.setAllCaps(false);
+        btnScan.setTextColor(Color.WHITE);
+        btnScan.setBackgroundResource(R.drawable.focus_bg); // 遥控聚焦高亮（青边深底）
+        btnScan.setFocusable(true);
+        scanRow.addView(etPort);
+        scanRow.addView(btnScan);
+        root.addView(scanRow);
+        final String[] scanning = {null};
+        btnScan.setOnClickListener(v -> {
+            if (scanning[0] != null) return;
+            int port;
+            try {
+                port = Integer.parseInt(etPort.getText().toString().trim());
+            } catch (Exception ex) {
+                port = 8086;
+            }
+            scanning[0] = "1";
+            btnScan.setText("扫描中…");
+            scanServers(port, results -> {
+                scanning[0] = null;
+                btnScan.setText("扫描服务端");
+                if (results.isEmpty()) {
+                    Toast.makeText(this, "未发现可用的服务端", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                String[] arr = results.toArray(new String[0]);
+                new AlertDialog.Builder(this)
+                        .setTitle("发现服务端")
+                        .setItems(arr, (d, w) -> et.setText(arr[w].replace("http://", "")))
+                        .setNegativeButton("取消", null)
+                        .show();
+            });
+        });
 
-        // 切歌默认请求：伴唱 / 原唱 / 上次（沿用上一首，上一首没指定默认伴奏）
+        // 播放画面撑满屏幕（HLS/Media3 内核）
+        LinearLayout rowFill = new LinearLayout(this);
+        rowFill.setGravity(Gravity.CENTER_VERTICAL);
+        rowFill.setOrientation(LinearLayout.HORIZONTAL);
+        rowFill.setClickable(true);
+        rowFill.setFocusable(true);
+        rowFill.setPadding(0, dp(6), 0, dp(6));
+        TextView tFill = new TextView(this);
+        tFill.setText("播放画面撑满屏幕");
+        tFill.setTextColor(Color.WHITE);
+        LinearLayout.LayoutParams lpFill = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        tFill.setLayoutParams(lpFill);
+        SwitchCompat swFill = new SwitchCompat(this);
+        swFill.setClickable(true);
+        swFill.setFocusable(true);
+        // 开关配色：选中亮青轨道/白拇指，未选浅紫灰轨道/浅白拇指（深蓝紫背景上清晰可见）
+        int[][] swStates = new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}};
+        swFill.setTrackTintList(new android.content.res.ColorStateList(swStates,
+                new int[]{0xFF2FC7EF, 0xFF4A4F73}));
+        swFill.setThumbTintList(new android.content.res.ColorStateList(swStates,
+                new int[]{0xFFFFFFFF, 0xFFC6CAE4}));
+        rowFill.addView(tFill);
+        rowFill.addView(swFill);
+        root.addView(rowFill);
+        rowFill.setBackgroundResource(R.drawable.focus_bg); // 行聚焦高亮（遥控操作开关时可见）
+        rowFill.setOnClickListener(v -> swFill.toggle());
+        swFill.setChecked(sp.getBoolean(KEY_FILL_SCREEN, false));
+
+        // 切歌默认请求：伴唱 / 原唱 / 上次
         TextView t3 = new TextView(this);
         t3.setText("切歌默认请求");
+        t3.setTextColor(Color.WHITE);
         t3.setPadding(0, dp(10), 0, 0);
         root.addView(t3);
         RadioGroup rg = new RadioGroup(this);
         rg.setOrientation(RadioGroup.HORIZONTAL);
         RadioButton rbAcc = new RadioButton(this);
         rbAcc.setText("伴唱");
+        rbAcc.setTextColor(Color.WHITE);
+        rbAcc.setButtonDrawable(R.drawable.radio_btn);
         RadioButton rbOrig = new RadioButton(this);
         rbOrig.setText("原唱");
+        rbOrig.setTextColor(Color.WHITE);
+        rbOrig.setButtonDrawable(R.drawable.radio_btn);
         RadioButton rbLast = new RadioButton(this);
         rbLast.setText("上次");
+        rbLast.setTextColor(Color.WHITE);
+        rbLast.setButtonDrawable(R.drawable.radio_btn);
         rbAcc.setPadding(dp(8), 0, dp(8), 0);
         rbOrig.setPadding(dp(8), 0, dp(8), 0);
         rbLast.setPadding(dp(8), 0, 0, 0);
@@ -825,62 +1325,380 @@ public class MainActivity extends AppCompatActivity {
         else if ("accompaniment".equals(vdef)) rbAcc.setChecked(true);
         else rbLast.setChecked(true);
 
-        // 载入当前随机开关状态。用 userTouched 防止异步响应回来覆盖用户刚做的操作：
-        // 网络慢时用户先点了开关，加载结果稍后才到，不能把它再拉回旧值。
-        final boolean[] userTouched = {false};
-        sw.setOnCheckedChangeListener((b, checked) -> userTouched[0] = true);
-        exec.execute(() -> {
-            try {
-                Api.HttpResult r = Api.get("/api/player/settings");
-                if (r.code == 200) {
-                    boolean v = new JSONObject(r.body).optBoolean("autoplay_random", false);
-                    ui.post(() -> {
-                        if (!userTouched[0]) sw.setChecked(v);
-                    });
-                }
-            } catch (Exception ignored) {
-            }
-        });
+        // 播放模式：HLS（默认）/ 直连
+        TextView tMode = new TextView(this);
+        tMode.setText("播放模式");
+        tMode.setTextColor(Color.WHITE);
+        tMode.setPadding(0, dp(10), 0, 0);
+        root.addView(tMode);
+        RadioGroup rgMode = new RadioGroup(this);
+        rgMode.setOrientation(RadioGroup.HORIZONTAL);
+        RadioButton rbHls = new RadioButton(this);
+        rbHls.setText("HLS");
+        rbHls.setTextColor(Color.WHITE);
+        rbHls.setButtonDrawable(R.drawable.radio_btn);
+        RadioButton rbDirect = new RadioButton(this);
+        rbDirect.setText("直连");
+        rbDirect.setTextColor(Color.WHITE);
+        rbDirect.setButtonDrawable(R.drawable.radio_btn);
+        rbHls.setPadding(dp(8), 0, dp(8), 0);
+        rgMode.addView(rbHls);
+        rgMode.addView(rbDirect);
+        root.addView(rgMode);
+        String pm = sp.getString(KEY_PLAY_MODE, "hls");
+        if ("hls".equals(pm)) rbHls.setChecked(true);
+        else rbDirect.setChecked(true);
 
-        new AlertDialog.Builder(this)
+        // 单选状态样式：选中=亮青底+白字；焦点未选=白色高亮框+白字（遥控光标）；普通未选=透明+浅紫灰字
+        android.widget.RadioGroup.OnCheckedChangeListener paint = (g, id) -> {
+            for (int i = 0; i < g.getChildCount(); i++) {
+                RadioButton r = (RadioButton) g.getChildAt(i);
+                r.setBackgroundResource(r.isChecked() ? R.drawable.bg_checked_option
+                        : (r.hasFocus() ? R.drawable.bg_option_focused : 0));
+                r.setTextColor(r.isChecked() ? 0xFFFFFFFF
+                        : (r.hasFocus() ? 0xFFFFFFFF : 0xFFB9BEDD));
+            }
+        };
+        rg.setOnCheckedChangeListener(paint);
+        rgMode.setOnCheckedChangeListener(paint);
+        paint.onCheckedChanged(rg, rg.getCheckedRadioButtonId());
+        paint.onCheckedChanged(rgMode, rgMode.getCheckedRadioButtonId());
+
+        // 随机空闲自动停止（0=关闭，默认30分钟）
+        TextView tIdle = new TextView(this);
+        tIdle.setText("随机空闲自动停止");
+        tIdle.setTextColor(Color.WHITE);
+        tIdle.setPadding(0, dp(10), 0, 0);
+        root.addView(tIdle);
+        RadioGroup rgIdle = new RadioGroup(this);
+        rgIdle.setOrientation(RadioGroup.HORIZONTAL);
+        final int[] idleOptions = {0, 15, 30, 60};
+        final String[] idleLabels = {"关闭", "15分钟", "30分钟", "60分钟"};
+        final RadioButton[] idleRbs = new RadioButton[idleOptions.length];
+        for (int i = 0; i < idleOptions.length; i++) {
+            RadioButton rb = new RadioButton(this);
+            rb.setText(idleLabels[i]);
+            rb.setTextColor(Color.WHITE);
+            rb.setButtonDrawable(R.drawable.radio_btn);
+            rb.setPadding(dp(8), 0, dp(8), 0);
+            rgIdle.addView(rb);
+            idleRbs[i] = rb;
+        }
+        root.addView(rgIdle);
+        int curIdle = sp.getInt(KEY_RANDOM_IDLE_MIN, RANDOM_IDLE_DEFAULT_MIN);
+        int idleIdx = 2; // 默认 30 分钟
+        for (int i = 0; i < idleOptions.length; i++) {
+            if (idleOptions[i] == curIdle) idleIdx = i;
+        }
+        idleRbs[idleIdx].setChecked(true);
+        rgIdle.setOnCheckedChangeListener(paint);
+        paint.onCheckedChanged(rgIdle, rgIdle.getCheckedRadioButtonId());
+
+        // 单选焦点反馈：遥控光标移动时白色高亮框跟随（TV 遥控操作，光标可见）
+        android.view.View.OnFocusChangeListener focusPaint = (v, has) -> {
+            RadioButton r = (RadioButton) v;
+            paint.onCheckedChanged((android.widget.RadioGroup) r.getParent(), r.getId());
+        };
+        for (android.widget.RadioGroup g : new android.widget.RadioGroup[]{rg, rgMode, rgIdle}) {
+            for (int i = 0; i < g.getChildCount(); i++) {
+                g.getChildAt(i).setFocusable(true);
+                g.getChildAt(i).setOnFocusChangeListener(focusPaint);
+            }
+        }
+
+        // 直连回退提示
+        TextView tNote = new TextView(this);
+        tNote.setText("直连播放失败或不受支持时会自动切换 HLS");
+        tNote.setPadding(0, dp(8), 0, 0);
+        tNote.setTextSize(12);
+        tNote.setTextColor(0xFF8A8AA3);
+        root.addView(tNote);
+
+        // 输入框聚焦高亮：深色背景上清晰显示光标/焦点位置（TV 遥控操作）
+        android.graphics.drawable.GradientDrawable etFocus = new android.graphics.drawable.GradientDrawable();
+        etFocus.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        etFocus.setColor(0xFF2A2A3C);
+        etFocus.setCornerRadius(dp(8));
+        etFocus.setStroke(dp(2), 0xFF36D9F7);
+        android.graphics.drawable.GradientDrawable etNorm = new android.graphics.drawable.GradientDrawable();
+        etNorm.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        etNorm.setColor(0xFF23232F);
+        etNorm.setCornerRadius(dp(8));
+        etNorm.setStroke(dp(1), 0xFF55556A);
+        android.graphics.drawable.StateListDrawable etBg = new android.graphics.drawable.StateListDrawable();
+        etBg.addState(new int[]{android.R.attr.state_focused}, etFocus);
+        etBg.addState(new int[]{}, etNorm);
+        et.setBackground(etBg);
+        etPort.setBackground(etBg);
+
+        android.app.AlertDialog dialog = new AlertDialog.Builder(this, R.style.Theme_Jiayuektv_Dialog)
                 .setTitle("设置")
-                .setView(root)
+                .setView(sv)
                 .setNegativeButton("取消", null)
                 .setPositiveButton("保存", (d, w) -> {
                     String v = et.getText().toString().trim().replace("http://", "");
-                    boolean random = sw.isChecked();
                     int rid = rg.getCheckedRadioButtonId();
                     String vd = rid == rbAcc.getId() ? "accompaniment"
                             : rid == rbOrig.getId() ? "original" : "last";
-                    sp.edit().putString(KEY_VOICE_DEFAULT, vd).apply();
+                    String newMode = rgMode.getCheckedRadioButtonId() == rbHls.getId() ? "hls" : "direct";
+                    String oldMode = sp.getString(KEY_PLAY_MODE, "hls");
+                    int idleVal = idleOptions[0];
+                    for (int i = 0; i < idleRbs.length; i++) {
+                        if (idleRbs[i].isChecked()) idleVal = idleOptions[i];
+                    }
+                    sp.edit()
+                            .putString(KEY_VOICE_DEFAULT, vd)
+                            .putString(KEY_PLAY_MODE, newMode)
+                            .putBoolean(KEY_FILL_SCREEN, swFill.isChecked())
+                            .putInt(KEY_RANDOM_IDLE_MIN, idleVal)
+                            .putInt(KEY_CFG_VER, CFG_VER_CURRENT)
+                            .apply();
+                    applyFillScreen(); // 立即应用画面缩放
                     if (!v.isEmpty()) {
                         String url = v.startsWith("http") ? v : "http://" + v;
                         sp.edit().putString(KEY_SERVER, url).apply();
                         Api.base = url;
                         restartPlayback();
                         Toast.makeText(this, "已保存，连接 " + url, Toast.LENGTH_SHORT).show();
+                    } else if (!newMode.equals(oldMode) && playingSongId > 0) {
+                        // 播放模式已切换：立即按新模式重播当前歌（切内核），
+                        // 避免"设置已切但当前歌还在旧内核播放"的控制错位
+                        userPaused = false;
+                        hlsFallback = false;
+                        playerErrorCount = 0;
+                        btnPlay.setText("暂停");
+                        playSong(playingSongId);
                     }
-                    exec.execute(() -> {
+                })
+                .setCancelable(true)
+                .create();
+        dialog.show();
+        // TV 遥控：聚焦地址框但隐藏软键盘（打开设置默认焦点在顶部，方向键从地址框开始导航）
+        // 注意：show() 后 view 尚未 attach，直接 requestFocus() 会失败导致焦点落到取消按钮，
+        // 必须等 onShow 回调（此时 view 已 attach）再请求焦点
+        dialog.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN);
+        dialog.setOnShowListener(d -> et.requestFocus());
+        // 输入框：方向键上下强制跳焦点（TV 遥控不乱跳），左右保留光标编辑
+        android.view.View.OnKeyListener editNav = (v, keyCode, event) -> {
+            if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) {
+                if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_DOWN) {
+                    android.view.View f = v.focusSearch(android.view.View.FOCUS_DOWN);
+                    if (f != null) f.requestFocus();
+                    return true;
+                }
+                if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_UP) {
+                    android.view.View f = v.focusSearch(android.view.View.FOCUS_UP);
+                    if (f != null) f.requestFocus();
+                    return true;
+                }
+                if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_RIGHT) {
+                    int p = ((android.widget.EditText) v).getSelectionStart();
+                    ((android.widget.EditText) v).setSelection(Math.min(p + 1, ((android.widget.EditText) v).length()));
+                    return true;
+                }
+                if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_LEFT) {
+                    int p = ((android.widget.EditText) v).getSelectionStart();
+                    ((android.widget.EditText) v).setSelection(Math.max(p - 1, 0));
+                    return true;
+                }
+            }
+            return false;
+        };
+        et.setOnKeyListener(editNav);
+        etPort.setOnKeyListener(editNav);
+        // 深蓝紫渐变背景（不再是纯黑），与主界面深色基调衔接但明显更"彩色"
+        android.graphics.drawable.GradientDrawable dlgBg = new android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                new int[]{0xFF3A3F6E, 0xFF252A48});
+        dialog.getWindow().getDecorView().setBackground(dlgBg);
+        // 保存/取消按钮：主次配色（青渐变 = 保存，灰紫渐变 = 取消）
+        try {
+            Button bPos = dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE);
+            Button bNeg = dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE);
+            bPos.setBackgroundResource(R.drawable.bg_btn_primary);
+            bNeg.setBackgroundResource(R.drawable.bg_btn_secondary);
+            bPos.setTextColor(0xFF002C3D);
+            bNeg.setTextColor(Color.WHITE);
+            bPos.setAllCaps(false);
+            bNeg.setAllCaps(false);
+        } catch (Exception ignored) {
+        }
+
+        // ===== TV 遥控焦点顺序：纵向主链 + 行内横向，方向键不乱跳 =====
+        int idAddr = View.generateViewId(); et.setId(idAddr);
+        int idPortV = View.generateViewId(); etPort.setId(idPortV);
+        int idScanV = View.generateViewId(); btnScan.setId(idScanV);
+        int idFillV = View.generateViewId(); rowFill.setId(idFillV);
+        int idFillSw = View.generateViewId(); swFill.setId(idFillSw);
+        int idAccV = View.generateViewId(); rbAcc.setId(idAccV);
+        int idOrigV = View.generateViewId(); rbOrig.setId(idOrigV);
+        int idLastV = View.generateViewId(); rbLast.setId(idLastV);
+        int idHlsV = View.generateViewId(); rbHls.setId(idHlsV);
+        int idDirectV = View.generateViewId(); rbDirect.setId(idDirectV);
+        int[] idleIds = new int[4];
+        for (int i = 0; i < 4; i++) { idleIds[i] = View.generateViewId(); idleRbs[i].setId(idleIds[i]); }
+        Button bCancelV = dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE);
+        Button bSaveV = dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE);
+        int idCancelV = View.generateViewId(); bCancelV.setId(idCancelV);
+        int idSaveV = View.generateViewId(); bSaveV.setId(idSaveV);
+
+        // 下：纵向主链（地址→端口→撑满→伴唱→HLS→关闭→取消），保存循环回顶部
+        et.setNextFocusDownId(idPortV);
+        etPort.setNextFocusDownId(idFillV);
+        btnScan.setNextFocusDownId(idFillV);
+        rowFill.setNextFocusDownId(idAccV);
+        swFill.setNextFocusDownId(idAccV);
+        rbAcc.setNextFocusDownId(idHlsV);
+        rbOrig.setNextFocusDownId(idDirectV);
+        rbLast.setNextFocusDownId(idDirectV);
+        rbHls.setNextFocusDownId(idleIds[0]);
+        rbDirect.setNextFocusDownId(idleIds[1]);
+        for (int i = 0; i < 4; i++) idleRbs[i].setNextFocusDownId(idCancelV);
+        // 弹窗底部按钮按"下"直接循环回顶部地址框（取消→保存是同行右移，会让用户误以为“下=右”）
+        bCancelV.setNextFocusDownId(idAddr);
+        bSaveV.setNextFocusDownId(idAddr);
+
+        // 上：反向主链
+        et.setNextFocusUpId(idSaveV);
+        etPort.setNextFocusUpId(idAddr);
+        btnScan.setNextFocusUpId(idAddr);
+        rowFill.setNextFocusUpId(idPortV);
+        swFill.setNextFocusUpId(idPortV);
+        rbAcc.setNextFocusUpId(idFillV);
+        rbOrig.setNextFocusUpId(idFillV);
+        rbLast.setNextFocusUpId(idFillV);
+        rbHls.setNextFocusUpId(idAccV);
+        rbDirect.setNextFocusUpId(idLastV);
+        for (int i = 0; i < 4; i++) idleRbs[i].setNextFocusUpId(i == 0 ? idHlsV : idDirectV);
+        bCancelV.setNextFocusUpId(idleIds[3]);
+        bSaveV.setNextFocusUpId(idAddr);
+
+        // 左/右：行内横向（组内相邻）
+        etPort.setNextFocusRightId(idScanV);
+        btnScan.setNextFocusLeftId(idPortV);
+        rbAcc.setNextFocusRightId(idOrigV);
+        rbOrig.setNextFocusLeftId(idAccV);
+        rbOrig.setNextFocusRightId(idLastV);
+        rbLast.setNextFocusLeftId(idOrigV);
+        rbHls.setNextFocusRightId(idDirectV);
+        rbDirect.setNextFocusLeftId(idHlsV);
+        for (int i = 0; i < 4; i++) {
+            if (i < 3) idleRbs[i].setNextFocusRightId(idleIds[i + 1]);
+            if (i > 0) idleRbs[i].setNextFocusLeftId(idleIds[i - 1]);
+        }
+        bCancelV.setNextFocusRightId(idSaveV);
+        bSaveV.setNextFocusLeftId(idCancelV);
+
+        // ===== 方向语义强制：上下=纵向、左右=横向；跨行乱跳（右=下/上=右）被拦截 =====
+        android.view.View.OnKeyListener dirNav = (v, keyCode, event) -> {
+            if (event.getAction() != android.view.KeyEvent.ACTION_DOWN) return false;
+            int dir;
+            boolean isHoriz;
+            if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_UP) { dir = android.view.View.FOCUS_UP; isHoriz = false; }
+            else if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_DOWN) { dir = android.view.View.FOCUS_DOWN; isHoriz = false; }
+            else if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_LEFT) { dir = android.view.View.FOCUS_LEFT; isHoriz = true; }
+            else if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_RIGHT) { dir = android.view.View.FOCUS_RIGHT; isHoriz = true; }
+            else return false;
+            android.view.View t = v.focusSearch(dir);
+            if (t == null || t == v || !t.isFocusable()) return true;
+            int[] a = new int[2]; int[] b = new int[2];
+            v.getLocationOnScreen(a); t.getLocationOnScreen(b);
+            if (isHoriz) {
+                // 左右：目标必须与当前水平带重叠（同行），否则不跳（防止“右=下跳”）
+                boolean sameRow = (b[1] < a[1] + v.getHeight()) && (a[1] < b[1] + t.getHeight());
+                if (!sameRow) return true;
+            } else {
+                // 上下：用控件中心比较方向（同行也算“方向正确”，避免同 y 的取消/保存被误拦；
+                // 只拦真正“往反方向跳”的情况：按下时目标中心在上方 / 按上时目标中心在下方）
+                int ay = a[1] + v.getHeight() / 2;
+                int by = b[1] + t.getHeight() / 2;
+                boolean dirOk = dir == android.view.View.FOCUS_DOWN ? (by >= ay) : (by <= ay);
+                if (!dirOk) return true;
+            }
+            t.requestFocus();
+            return true;
+        };
+        for (android.widget.RadioGroup g : new android.widget.RadioGroup[]{rg, rgMode, rgIdle}) {
+            for (int i = 0; i < g.getChildCount(); i++) g.getChildAt(i).setOnKeyListener(dirNav);
+        }
+        rowFill.setOnKeyListener(dirNav);
+        swFill.setOnKeyListener(dirNav);
+        btnScan.setOnKeyListener(dirNav);
+        bCancelV.setOnKeyListener(dirNav);
+        bSaveV.setOnKeyListener(dirNav);
+    }
+
+    /** 局域网扫描服务端：本机网段 1-254 并发探测 /api/stats，端口可指定（默认 8086）。 */
+    private void scanServers(int port, Callback<List<String>> done) {
+        exec.execute(() -> {
+            final List<String> found = Collections.synchronizedList(new ArrayList<>());
+            List<String> subnets = localSubnets();
+            if (subnets.isEmpty()) {
+                subnets.add("192.168.1.");
+                subnets.add("192.168.0.");
+            }
+            ExecutorService pool = Executors.newFixedThreadPool(32);
+            for (String sub : subnets) {
+                for (int i = 1; i <= 254; i++) {
+                    final String ip = sub + i;
+                    pool.execute(() -> {
                         try {
-                            JSONObject b = new JSONObject();
-                            b.put("autoplay_random", random);
-                            Api.put("/api/player/settings", b);
+                            HttpURLConnection c = (HttpURLConnection) new URL("http://" + ip + ":" + port + "/api/stats").openConnection();
+                            c.setConnectTimeout(700);
+                            c.setReadTimeout(700);
+                            if (c.getResponseCode() == 200) {
+                                found.add(ip + ":" + port);
+                            }
+                            c.disconnect();
                         } catch (Exception ignored) {
                         }
                     });
-                })
-                .setCancelable(true)
-                .show();
+                }
+            }
+            pool.shutdown();
+            try {
+                pool.awaitTermination(10, TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) {
+            }
+            final List<String> result = new ArrayList<>(found);
+            Collections.sort(result);
+            ui.post(() -> done.call(result));
+        });
+    }
+
+    /** 本机 IPv4 网段列表（去掉最后一段）。 */
+    private List<String> localSubnets() {
+        List<String> out = new ArrayList<>();
+        try {
+            Enumeration<NetworkInterface> nis = NetworkInterface.getNetworkInterfaces();
+            while (nis.hasMoreElements()) {
+                NetworkInterface ni = nis.nextElement();
+                if (!ni.isUp() || ni.isLoopback()) continue;
+                Enumeration<InetAddress> addrs = ni.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress a = addrs.nextElement();
+                    if (a.isLoopbackAddress()) continue;
+                    byte[] b = a.getAddress();
+                    if (b.length == 4) {
+                        out.add((b[0] & 0xFF) + "." + (b[1] & 0xFF) + "." + (b[2] & 0xFF) + ".");
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
     }
 
     private void restartPlayback() {
         playingSongId = -1;
-        if (player != null) {
-            player.stop();
-            player.clearMediaItems();
+        hlsFallback = false;
+        cancelDirectWatchdog();
+        if (core != null) {
+            core.stop();
         }
         start();
     }
+
     private int dp(int v) {
         return Math.round(getResources().getDisplayMetrics().density * v);
     }
@@ -898,24 +1716,38 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (player != null && player.getPlayWhenReady()) player.play();
+        Log.d(TAG, "onResume: corePlaying=" + (core != null && core.isPlaying()) + " userPaused=" + userPaused);
+        if (core != null && core.isPlaying()) core.resume();
+        // 唤醒回前台时若 HLS 仍卡缓冲（未暂停且未真正起播）→ 重启看门狗兜底，避免一直转圈
+        if (core != null && !core.isPlaying() && !userPaused && playingSongId > 0 && !hlsEverPlayed
+                && ("hls".equals(playMode()) || hlsFallback)) {
+            startHlsWatchdog();
+        }
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        if (player != null && player.getPlayWhenReady()) player.pause();
+        Log.d(TAG, "onPause: corePlaying=" + (core != null && core.isPlaying()) + " userPaused=" + userPaused);
+        if (core != null && core.isPlaying()) core.pause();
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
         ui.removeCallbacksAndMessages(null);
+        cancelDirectWatchdog();
+        cancelHlsWatchdog();
         if (ctrlWS != null) ctrlWS.close();
-        if (player != null) {
-            player.release();
-            player = null;
+        if (core != null) {
+            core.release();
+            core = null;
         }
         exec.shutdownNow();
+    }
+
+    /** 简单回调（扫描服务端结果）。 */
+    public interface Callback<T> {
+        void call(T value);
     }
 }

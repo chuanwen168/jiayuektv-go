@@ -6,4 +6,19 @@
     </style>
 
     <style name="Theme.Jiayuektv" parent="Base.Theme.Jiayuektv" />
+
+    <!-- 设置对话框深色主题：电视大屏白底看不清，统一深色背景 + 白字；光标亮青色 -->
+    <style name="Theme.Jiayuektv.Dialog" parent="Theme.AppCompat.Dialog.Alert">
+        <item name="android:windowBackground">#FF1C1C28</item>
+        <item name="android:colorBackground">#FF1C1C28</item>
+        <item name="android:textColorPrimary">#FFFFFFFF</item>
+        <item name="android:textColorSecondary">#FFB4B4CC</item>
+        <item name="android:textColorHint">#FF8A8AA3</item>
+        <item name="android:textCursorDrawable">@drawable/cursor</item>
+        <item name="colorAccent">#FF36D9F7</item>
+        <item name="colorPrimary">#FF36D9F7</item>
+        <item name="colorControlNormal">#FFB4B4CC</item>
+        <item name="colorControlActivated">#FF36D9F7</item>
+        <item name="android:backgroundDimAmount">0.6</item>
+    </style>
 </resources>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 单选焦点态：白色高亮框 = 遥控光标位置（TV 遥控器导航可见） -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#00000000" />
+    <stroke android:width="3dp" android:color="#FFFFFFFF" />
+    <corners android:radius="10dp" />
+</shape>

@@ -13,3 +13,12 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Build outputs
+*.apk
+*.aab
+app/build/
+app/x86/
+app/arm64/
+app/armv7/
+app/baselineProfiles/

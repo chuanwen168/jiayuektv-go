@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 输入光标：亮青色，深色对话框背景上清晰可见 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <size android:width="3dp" />
+    <solid android:color="#FF36D9F7" />
+</shape>

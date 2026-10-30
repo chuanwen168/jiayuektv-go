@@ -28,6 +28,10 @@ public class CtrlWS {
         default void onEffect(String effect, String nickname) {
         }
 
+        /** 点歌队列变化（type=queue 广播：点歌/置顶/删歌/切歌后立即刷新本地状态）。 */
+        default void onQueueChanged() {
+        }
+
         /** 连接状态变化（connected=true 表示已连接服务端）。 */
         default void onStatus(boolean connected) {
         }
@@ -83,6 +87,9 @@ public class CtrlWS {
                                 final String nick = msg.optString("nickname", "");
                                 ui.post(() -> listener.onEffect(effect, nick));
                             }
+                        } else if ("queue".equals(msg.optString("type"))) {
+                            // 点歌队列变化广播：立即刷新状态（字幕下一曲/正在播放及时更新）
+                            ui.post(() -> listener.onQueueChanged());
                         }
                     } catch (Exception ignored) {
                     }
@@ -128,5 +135,16 @@ public class CtrlWS {
                 }
             }
         });
+    }
+
+    /** 向服务端发送消息（上报播放状态等；未连接时静默丢弃）。 */
+    public void send(String text) {
+        WebSocket s = socket;
+        if (s != null) {
+            try {
+                s.send(text);
+            } catch (Exception ignored) {
+            }
+        }
     }
 }

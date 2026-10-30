@@ -37,13 +37,13 @@ public class TickerView extends AppCompatTextView {
     public TickerView(Context context, AttributeSet attrs) {
         super(context, attrs);
         setSingleLine(true);
-        // 外观对齐网页版：默认浅白 rgba(240,242,255,.8)、18px、字重500、深色低透底
-        setTextColor(Color.argb(204, 240, 242, 255));
-        setTextSize(18);
+        // 外观对齐网页版：浅白文字、大字号（24sp）、字重500、深色低透底
+        setTextColor(Color.argb(230, 240, 242, 255));
+        setTextSize(24);
         setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        setBackgroundColor(Color.argb(64, 8, 6, 20));
+        setBackgroundColor(Color.argb(80, 8, 6, 20));
         setLetterSpacing(0.03f);
-        setPadding(dp(12), dp(4), dp(12), dp(4));
+        setPadding(dp(16), dp(8), dp(16), dp(8));
         setGravity(Gravity.CENTER_VERTICAL);
         setVisibility(GONE);
     }
@@ -52,17 +52,18 @@ public class TickerView extends AppCompatTextView {
         return Math.round(getResources().getDisplayMetrics().density * v);
     }
 
-    /** 开始滚动一次：从父容器右边缘外滚到完全移出左侧，结束后隐藏。 */
+    /** 开始滚动一次：从父容器右边缘外滚到完全移出左侧，结束后隐藏。
+     *  父容器 paddingEnd 用于避开右上角二维码（待机时常显），滚动只到 paddingEnd 左侧。 */
     public void startTicker(CharSequence text) {
         stop();
         setText(text);
         setVisibility(VISIBLE);
         measure(0, 0);
-        // 父容器宽度（从父布局取）
+        // 父容器滚动宽度（减 paddingEnd 避开右上角二维码区域）
         View parent = (View) getParent();
-        int parentW = parent != null ? parent.getWidth() : 1920;
+        int parentW = parent != null ? parent.getWidth() - parent.getPaddingEnd() : 1920;
         int textW = getMeasuredWidth();
-        float startX = parentW + 20;          // 屏幕最右之外
+        float startX = parentW + 20;          // 有效区域最右之外
         float endX = -textW - 20;             // 完全移出最左
         setX(startX);
         animator = ObjectAnimator.ofFloat(this, View.X, startX, endX);

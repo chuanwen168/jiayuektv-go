@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 次操作按钮：灰紫渐变（取消），白色文字 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="0"
+        android:startColor="#FF4E5478"
+        android:endColor="#FF363B58" />
+    <corners android:radius="12dp" />
+</shape>

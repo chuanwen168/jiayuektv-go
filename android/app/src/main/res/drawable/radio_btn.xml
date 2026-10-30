@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 设置对话框 RadioButton：深色背景上选中/未选状态都清晰可见 -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_checked="true">
+        <layer-list>
+            <item>
+                <shape android:shape="oval">
+                    <solid android:color="#00000000" />
+                    <stroke android:width="3dp" android:color="#FF36D9F7" />
+                    <size android:width="26dp" android:height="26dp" />
+                </shape>
+            </item>
+            <item android:gravity="center">
+                <shape android:shape="oval">
+                    <solid android:color="#FF36D9F7" />
+                    <size android:width="12dp" android:height="12dp" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+    <item>
+        <layer-list>
+            <item>
+                <shape android:shape="oval">
+                    <solid android:color="#00000000" />
+                    <stroke android:width="3dp" android:color="#FFB4B4CC" />
+                    <size android:width="26dp" android:height="26dp" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+</selector>

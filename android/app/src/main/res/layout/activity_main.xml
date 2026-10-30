@@ -6,7 +6,7 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- 播放画面（全屏） -->
+    <!-- 播放画面（全屏）：Media3 内核容器 -->
     <androidx.media3.ui.PlayerView
         android:id="@+id/playerView"
         android:layout_width="match_parent"
@@ -14,6 +14,13 @@
         app:use_controller="false"
         app:resize_mode="fit"
         app:show_buffering="always" />
+
+    <!-- 播放画面（全屏）：VLC 内核容器（设置切到 VLC 时显示，默认隐藏） -->
+    <org.videolan.libvlc.util.VLCVideoLayout
+        android:id="@+id/vlcView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
 
     <!-- 待机界面（未点歌/切完最后一首，仿网页 TV 大屏） -->
     <LinearLayout
@@ -138,11 +145,12 @@
             <Button
                 android:id="@+id/btnPlay"
                 style="?android:attr/borderlessButtonStyle"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="44dp"
-                android:layout_margin="5dp"
+                android:layout_margin="3dp"
+                android:layout_weight="1"
                 android:background="@drawable/btn_ctrl"
-                android:minWidth="100dp"
+                android:minWidth="0dp"
                 android:text="暂停"
                 android:textColor="#FFFFFFFF"
                 android:textSize="16sp" />
@@ -150,11 +158,12 @@
             <Button
                 android:id="@+id/btnRepeat"
                 style="?android:attr/borderlessButtonStyle"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="44dp"
-                android:layout_margin="5dp"
+                android:layout_margin="3dp"
+                android:layout_weight="1"
                 android:background="@drawable/btn_ctrl"
-                android:minWidth="100dp"
+                android:minWidth="0dp"
                 android:text="重唱"
                 android:textColor="#FFFFFFFF"
                 android:textSize="16sp" />
@@ -162,11 +171,12 @@
             <Button
                 android:id="@+id/btnNext"
                 style="?android:attr/borderlessButtonStyle"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="44dp"
-                android:layout_margin="5dp"
+                android:layout_margin="3dp"
+                android:layout_weight="1"
                 android:background="@drawable/btn_ctrl"
-                android:minWidth="100dp"
+                android:minWidth="0dp"
                 android:text="切歌"
                 android:textColor="#FFFFFFFF"
                 android:textSize="16sp" />
@@ -174,11 +184,12 @@
             <Button
                 android:id="@+id/btnVolDown"
                 style="?android:attr/borderlessButtonStyle"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="44dp"
-                android:layout_margin="5dp"
+                android:layout_margin="3dp"
+                android:layout_weight="1"
                 android:background="@drawable/btn_ctrl"
-                android:minWidth="100dp"
+                android:minWidth="0dp"
                 android:text="音量-"
                 android:textColor="#FFFFFFFF"
                 android:textSize="16sp" />
@@ -186,11 +197,12 @@
             <Button
                 android:id="@+id/btnVolUp"
                 style="?android:attr/borderlessButtonStyle"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="44dp"
-                android:layout_margin="5dp"
+                android:layout_margin="3dp"
+                android:layout_weight="1"
                 android:background="@drawable/btn_ctrl"
-                android:minWidth="100dp"
+                android:minWidth="0dp"
                 android:text="音量+"
                 android:textColor="#FFFFFFFF"
                 android:textSize="16sp" />
@@ -198,11 +210,12 @@
             <Button
                 android:id="@+id/btnVoice"
                 style="?android:attr/borderlessButtonStyle"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="44dp"
-                android:layout_margin="5dp"
+                android:layout_margin="3dp"
+                android:layout_weight="1"
                 android:background="@drawable/btn_ctrl"
-                android:minWidth="100dp"
+                android:minWidth="0dp"
                 android:text="伴唱"
                 android:textColor="#FFFFFFFF"
                 android:textSize="16sp" />
@@ -210,11 +223,12 @@
             <Button
                 android:id="@+id/btnScan"
                 style="?android:attr/borderlessButtonStyle"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="44dp"
-                android:layout_margin="5dp"
+                android:layout_margin="3dp"
+                android:layout_weight="1"
                 android:background="@drawable/btn_ctrl"
-                android:minWidth="100dp"
+                android:minWidth="0dp"
                 android:text="扫码"
                 android:textColor="#FFFFFFFF"
                 android:textSize="16sp" />
@@ -222,11 +236,12 @@
             <Button
                 android:id="@+id/btnSettings"
                 style="?android:attr/borderlessButtonStyle"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="44dp"
-                android:layout_margin="5dp"
+                android:layout_margin="3dp"
+                android:layout_weight="1"
                 android:background="@drawable/btn_ctrl"
-                android:minWidth="100dp"
+                android:minWidth="0dp"
                 android:text="设置"
                 android:textColor="#FFFFFFFF"
                 android:textSize="16sp" />

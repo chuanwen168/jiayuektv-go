@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 设置对话框选中项：亮青半透明底 + 青边，选中一眼可见 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#3D36D9F7" />
+    <stroke android:width="2dp" android:color="#FF36D9F7" />
+    <corners android:radius="10dp" />
+</shape>
