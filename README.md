@@ -7,6 +7,7 @@
 项目地址：<https://github.com/chuanwen168/jiayuektv-go>
 
 > 本项目不再提供 zip 免安装包，统一使用 **飞牛 FPK** 或 **Docker 镜像** 部署。
+> Windows 下载zip包，解压运行start即可。需要自行下载ffmpeg组件和ffprobe组件，网上很多，旧版本也有提供。
 
 ---
 
