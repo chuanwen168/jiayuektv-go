@@ -4,7 +4,9 @@
 > **一台电脑或 NAS 当服务器**，全家用手机扫码点歌、平板当点歌台、电视大屏播放，歌库放在硬盘里自己说了算。
 
 当前版本：**v1.1.2**
-项目地址：<https://github.com/chuanwen168/jiayuektv-go>
+项目地址：<https://github.com/chuanwen168/jiayuektv-go/releases>
+网盘分流下载地址：https://pan.quark.cn/s/a4700dcb10cc
+提取码：3y6s
 
 > 本项目不再提供 zip 免安装包，统一使用 **飞牛 FPK** 或 **Docker 镜像** 部署。
 > Windows 下载zip包，解压运行start即可。需要自行下载ffmpeg组件和ffprobe组件，网上很多，旧版本也有提供。
