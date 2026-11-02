@@ -89,8 +89,8 @@ type RemoveHLS func(id int64)
 
 // Scanner 持有扫描所需的环境配置。
 type Scanner struct {
-	MVDir     string // 本地曲库根，默认 /mv
-	MVNetDir  string // 网盘曲库根，默认 /mv-net
+	MVDirs    []string // 本地曲库根目录列表（1.0.4 多目录，MV_DIR 冒号分隔）
+	MVNetDir  string   // 网盘曲库根，默认 /mv-net
 	RemoveHLS RemoveHLS
 }
 
@@ -126,13 +126,24 @@ func (s *Scanner) DiscoverSources() []Source {
 	var out []Source
 	seen := map[string]bool{} // 已占用的来源名，避免 /mv 与 /mv-net 子目录重名冲突
 
-	// 本地根 /mv：根目录文件 → 默认来源；一级子目录 → 子目录来源。
-	if add, ok := s.rootSources(s.MVDir, "local", "", true, seen); ok {
-		out = append(out, add...)
+	// 多本地根（1.0.4）：每个根目录文件 → 默认来源；一级子目录 → 子目录来源。
+	// 跨根同名子目录去重（后出现的跳过，避免 filename 前缀冲突）。
+	for _, d := range s.MVDirs {
+		if add, ok := s.rootSources(d, "local", "", true, seen); ok {
+			out = append(out, add...)
+		}
 	}
 
 	// 网盘根 /mv-net：根目录文件 → Name="net" 默认来源；一级子目录 → 子目录来源。
-	if s.MVNetDir != "" && s.MVNetDir != s.MVDir {
+	// 网盘根已包含在本地多目录列表中时不重复枚举。
+	netDupe := false
+	for _, d := range s.MVDirs {
+		if d == s.MVNetDir {
+			netDupe = true
+			break
+		}
+	}
+	if s.MVNetDir != "" && !netDupe {
 		if add, ok := s.rootSources(s.MVNetDir, "net", "net", false, seen); ok {
 			out = append(out, add...)
 		}

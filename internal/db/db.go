@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT
 );
 
--- 1.0.4 性能索引：大曲库下筛选/榜单/历史聚合加速（IF NOT EXISTS 幂等，已有库启动时自动补建）。
+-- 1.0.5 性能索引：大曲库下筛选/榜单/历史聚合加速（IF NOT EXISTS 幂等，已有库启动时自动补建）。
 CREATE INDEX IF NOT EXISTS idx_songs_language ON songs(language);
 CREATE INDEX IF NOT EXISTS idx_songs_genre ON songs(genre);
 CREATE INDEX IF NOT EXISTS idx_songs_play_count ON songs(play_count);

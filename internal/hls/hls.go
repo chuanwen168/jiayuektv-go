@@ -194,9 +194,16 @@ func probeFirstKeyframeTime(filepath string) float64 {
 	return f
 }
 
+// runFFmpegTimeout 单条 ffmpeg 命令的最长执行时间：超过视为进程僵死/源网络卡死，
+// 强制 kill 释放 building 标记（此前死任务会永久占用，导致后续请求全部"复用死任务"不播放）。
+const runFFmpegTimeout = 5 * time.Minute
+
 // runFFmpeg 执行 ffmpeg，出错时返回包含退出码与 stderr 尾部信息的 error。
 func runFFmpeg(args ...string) error {
-	cmd := exec.Command(binpath.Resolve("ffmpeg"), args...)
+	ctx, cancel := context.WithTimeout(context.Background(), runFFmpegTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binpath.Resolve("ffmpeg"), args...)
+	cmd.Env = withLibvaEnv()
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return err
@@ -209,6 +216,90 @@ func runFFmpeg(args ...string) error {
 		tail := string(b)
 		if len(tail) > 4000 {
 			tail = tail[len(tail)-4000:]
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("ffmpeg 超时(%s)被终止，已释放转码任务: %s", runFFmpegTimeout, tail)
+		}
+		return fmt.Errorf("ffmpeg exit %v: %s", err, tail)
+	}
+	return nil
+}
+
+// isSongStillQueued 判断歌曲是否仍在播放/等待队列（转码取消检查用）。
+// 歌被切走/播完(done)/移除后返回 false，未完成的转码应随之终止，避免 ffmpeg 空转吃 CPU。
+func isSongStillQueued(songID int64) bool {
+	if songID <= 0 {
+		return true
+	}
+	var n int
+	err := db.DB.QueryRow("SELECT COUNT(*) FROM queue WHERE song_id=? AND status IN ('playing','waiting')", songID).Scan(&n)
+	return err == nil && n > 0
+}
+
+// withLibvaEnv 返回继承的环境变量，并强制注入 trim 版 libva 驱动路径：
+// fnOS 上 ffmpeg 链接 trim 的 libva（/usr/trim/lib/mediasrv/lib），驱动在 lib/dri，
+// 默认 LIBVA_DRIVERS_PATH 找不到该目录导致 VAAPI 初始化失败（Device creation failed: -22）。
+// 强制过滤掉系统中已有的 LIBVA_DRIVERS_PATH（fnOS 可能注入错误默认值），确保硬编可用。
+func withLibvaEnv() []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "LIBVA_DRIVERS_PATH=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	// 仅当 fnOS 的 VAAPI 驱动目录真实存在时才注入；否则（如 Docker 容器内
+	// 路径为 /usr/lib/.../dri）保留 libva 默认搜索路径，避免指向不存在的
+	// 目录导致硬编初始化失败而回退软编。
+	if _, err := os.Stat("/usr/trim/lib/mediasrv/lib/dri"); err == nil {
+		env = append(env, "LIBVA_DRIVERS_PATH=/usr/trim/lib/mediasrv/lib/dri")
+	}
+	return env
+}
+
+// runFFmpegFor 执行 ffmpeg（同 runFFmpeg），并随歌曲队列状态支持取消：
+// 转码期间每 5s 检查一次歌曲是否仍在 playing/waiting 队列，不在（已被切走/播完/移除）
+// 则终止 ffmpeg 释放 CPU；songID<=0 时不做队列检查（探测等无队列关联场景）。
+func runFFmpegFor(songID int64, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), runFFmpegTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binpath.Resolve("ffmpeg"), args...)
+	cmd.Env = withLibvaEnv()
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	if songID > 0 {
+		stopCheck := make(chan struct{})
+		go func() {
+			t := time.NewTicker(5 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-stopCheck:
+					return
+				case <-t.C:
+					if !isSongStillQueued(songID) {
+						logger.Info("TRANSCODE", fmt.Sprintf("[歌曲 id=%d] 已不在播放/等待队列，取消未完成转码并终止 ffmpeg", songID))
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+		defer close(stopCheck)
+	}
+	b, _ := io.ReadAll(stderr)
+	if err := cmd.Wait(); err != nil {
+		tail := string(b)
+		if len(tail) > 4000 {
+			tail = tail[len(tail)-4000:]
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("ffmpeg 终止（超时或歌曲已不在队列被取消）: %s", tail)
 		}
 		return fmt.Errorf("ffmpeg exit %v: %s", err, tail)
 	}
@@ -382,7 +473,7 @@ func lastLine(s string) string {
 
 // ---------- 轨道构建 ----------
 
-func (h *HLS) buildVideoRendition(src, dir, songTag string) error {
+func (h *HLS) buildVideoRendition(src, dir, songTag string, songID int64) error {
 	common := []string{"-loglevel", "error", "-y", "-i", src, "-map", "0:v:0", "-an"}
 	out := hlsOutArgs(filepath.Join(dir, "video_%04d.ts"), filepath.Join(dir, "video.m3u8"))
 	codec := probeCodecName(src, "v:0")
@@ -396,7 +487,7 @@ func (h *HLS) buildVideoRendition(src, dir, songTag string) error {
 	// 从第一个关键帧处开始，播放器表现为"从中间开始播放"，此时必须转码保证从 0 起播。
 	if safeVideoCodecs[codec] && firstKey >= 0 && firstKey < 1.0 {
 		args := append(append([]string{}, common...), append([]string{"-c:v", "copy"}, out...)...)
-		if err := runFFmpeg(args...); err == nil {
+		if err := runFFmpegFor(songID, args...); err == nil {
 			logger.Info("TRANSCODE", fmt.Sprintf("%s 视频轨: 直接封装拷贝(copy)完成，耗时 %dms，未使用核显", songTag, time.Since(t0).Milliseconds()))
 			return nil
 		} else {
@@ -419,7 +510,7 @@ func (h *HLS) buildVideoRendition(src, dir, songTag string) error {
 			"-b:v", "4000k", "-maxrate", "6000k", "-bufsize", "9000k",
 		}
 		args = append(args, out...)
-		err := runFFmpeg(args...)
+		err := runFFmpegFor(songID, args...)
 		if err == nil {
 			logger.Info("TRANSCODE", fmt.Sprintf("%s 视频轨: 核显调用成功(Tier1 硬解+硬编 h264_vaapi)，耗时 %dms", songTag, time.Since(t1).Milliseconds()))
 			return nil
@@ -435,7 +526,7 @@ func (h *HLS) buildVideoRendition(src, dir, songTag string) error {
 			"-b:v", "4000k", "-maxrate", "6000k", "-bufsize", "9000k",
 		}...)
 		args = append(args, out...)
-		err = runFFmpeg(args...)
+		err = runFFmpegFor(songID, args...)
 		if err == nil {
 			logger.Info("TRANSCODE", fmt.Sprintf("%s 视频轨: 核显调用成功(Tier2 软解+硬编 h264_vaapi)，耗时 %dms", songTag, time.Since(t2).Milliseconds()))
 			return nil
@@ -453,7 +544,7 @@ func (h *HLS) buildVideoRendition(src, dir, songTag string) error {
 			"-pix_fmt", "yuv420p",
 		}...)
 		args = append(args, out...)
-		err := runFFmpeg(args...)
+		err := runFFmpegFor(songID, args...)
 		if err == nil {
 			logger.Info("TRANSCODE", fmt.Sprintf("%s 视频轨: NVIDIA NVENC 硬编(h264_nvenc)成功，耗时 %dms", songTag, time.Since(tN).Milliseconds()))
 			return nil
@@ -470,14 +561,14 @@ func (h *HLS) buildVideoRendition(src, dir, songTag string) error {
 		"-g", "48", "-sc_threshold", "0", "-pix_fmt", "yuv420p",
 	}...)
 	args = append(args, out...)
-	if err := runFFmpeg(args...); err != nil {
+	if err := runFFmpegFor(songID, args...); err != nil {
 		return err
 	}
 	logger.Info("TRANSCODE", fmt.Sprintf("%s 视频轨: 软件编码(Tier3 libx264)完成，耗时 %dms，未使用核显", songTag, time.Since(t3).Milliseconds()))
 	return nil
 }
 
-func (h *HLS) buildAudioRendition(src, dir string, track int64, songTag string) error {
+func (h *HLS) buildAudioRendition(src, dir string, track int64, songTag string, songID int64) error {
 	common := []string{"-loglevel", "error", "-y", "-i", src, "-map", fmt.Sprintf("0:a:%d", track), "-vn"}
 	out := hlsOutArgs(filepath.Join(dir, fmt.Sprintf("audio%d_%%04d.ts", track)), filepath.Join(dir, fmt.Sprintf("audio%d.m3u8", track)))
 	codec := probeCodecName(src, fmt.Sprintf("a:%d", track))
@@ -493,7 +584,7 @@ func (h *HLS) buildAudioRendition(src, dir string, track int64, songTag string) 
 
 	if safeAudioCodecs[codec] {
 		args := append(append([]string{}, common...), append([]string{"-c:a", "copy"}, out...)...)
-		if err := runFFmpeg(args...); err == nil {
+		if err := runFFmpegFor(songID, args...); err == nil {
 			logger.Info("TRANSCODE", fmt.Sprintf("%s 音轨%d(%s): 直接封装拷贝(copy)完成，耗时 %dms", songTag, track, trackName, time.Since(t0).Milliseconds()))
 			return nil
 		} else {
@@ -503,7 +594,7 @@ func (h *HLS) buildAudioRendition(src, dir string, track int64, songTag string) 
 
 	t1 := time.Now()
 	args := append(append([]string{}, common...), append([]string{"-c:a", "aac", "-b:a", "192k"}, out...)...)
-	if err := runFFmpeg(args...); err != nil {
+	if err := runFFmpegFor(songID, args...); err != nil {
 		return err
 	}
 	logger.Info("TRANSCODE", fmt.Sprintf("%s 音轨%d(%s): 软件编码(aac)完成，耗时 %dms", songTag, track, trackName, time.Since(t1).Milliseconds()))
@@ -569,7 +660,7 @@ func (h *HLS) buildHLS(song *db.Song, dir string) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := h.buildVideoRendition(src, dir, songTag); err != nil {
+		if err := h.buildVideoRendition(src, dir, songTag, song.ID); err != nil {
 			errCh <- err
 		}
 	}()
@@ -579,7 +670,7 @@ func (h *HLS) buildHLS(song *db.Song, dir string) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := h.buildAudioRendition(src, dir, track, songTag); err != nil {
+			if err := h.buildAudioRendition(src, dir, track, songTag, song.ID); err != nil {
 				errCh <- err
 			}
 		}()

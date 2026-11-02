@@ -48,8 +48,9 @@ var (
 	digitsRe   = regexp.MustCompile(`^\d+$`)
 
 	// voiceMu / voiceLastSwitch：音轨切换防回环去重状态（见 handleVoiceSwitch 注释）。
-	voiceMu         sync.Mutex
-	voiceLastSwitch = map[string]time.Time{}
+	voiceMu          sync.Mutex
+	voiceLastSwitch  = map[string]time.Time{}
+	scanMu           sync.Mutex // 1.0.4：扫描互斥，防并发扫描
 )
 
 func main() {
@@ -76,9 +77,9 @@ func main() {
 	// 1.2.0：ADMIN_PASSWORD 环境变量预置管理员密码（仅首次未设密码时生效）。
 	adm.EnsureInitialPassword(cfg.AdminPassword)
 
-	h = hls.New(cfg.HLSDir, cfg.VAAPIDevice, cfg.HLSCacheMaxAgeDays, cfg.NVENCEnabled)
+	h = hls.New(cfg.HLSDir, cfg.VAAPIDevice, cfg.HLSCacheMaxAgeDays, cfg.NVENCEnabled, cfg.TranscodeConcurrency)
 	h.EnsureDir()
-	sc = &scanner.Scanner{MVDir: cfg.MVDir, MVNetDir: cfg.MVNetDir, RemoveHLS: h.Remove}
+	sc = &scanner.Scanner{MVDirs: cfg.MVDirs, MVNetDir: cfg.MVNetDir, RemoveHLS: h.Remove}
 	hub = ws.NewHub()
 	hub.GetQueue = queuePayload
 
@@ -120,6 +121,17 @@ func main() {
 
 	// 预热 VAAPI 自检，避免第一首点歌额外等待。
 	go h.Warmup()
+
+	// 1.0.4：历史记录定期清理（保留最近 N 条），启动时清理一次 + 每 24 小时一次，
+	// 防止 history 表无限膨胀拖慢常唱榜聚合。
+	cleanupHistory()
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			cleanupHistory()
+		}
+	}()
 
 	logger.Info("SERVER", fmt.Sprintf("KTV 服务已启动: http://0.0.0.0:%s (web=%s)", cfg.Port, webDir))
 	if err := srv.ListenAndServe(); err != nil {
@@ -181,6 +193,7 @@ func registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/admin/presets", adm.RequireAuth(handlePresetsGet))
 	mux.HandleFunc("POST /api/admin/presets", adm.RequireAuth(handlePresetsAdd))
 	mux.HandleFunc("DELETE /api/admin/presets", adm.RequireAuth(handlePresetsDelete))
+	mux.HandleFunc("GET /api/admin/songs-ids", adm.RequireAuth(handleSongsIds))
 
 	// ---------- 曲库来源管理（1.2.0 多曲库：/mv 本地 + /mv-net 网盘） ----------
 	mux.HandleFunc("GET /api/library-sources", adm.RequireAuth(handleLibrarySources))
@@ -223,7 +236,8 @@ func registerRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /pad/", http.StripPrefix("/pad/", http.FileServer(http.Dir(filepath.Join(webDir, "pad")))))
 	mux.Handle("GET /cover/", http.StripPrefix("/cover/", http.FileServer(http.Dir(filepath.Join(cfg.DataDir, "covers")))))
 	// 1.2.0：歌手头像目录（图片名=歌手名，如 周杰伦.jpg），前端按歌手名拼接 URL。
-	mux.Handle("GET /singer/", http.StripPrefix("/singer/", http.FileServer(http.Dir(cfg.SingerDir))))
+	// 1.0.4：支持 SINGER_DIR 冒号分隔多目录，按顺序查找。
+	mux.HandleFunc("GET /singer/", singerAvatarHandler)
 	// 主页：根路径展示 TV / 手机 / 管理三个入口（web/index.html）。
 	mux.Handle("GET /", http.FileServer(http.Dir(webDir)))
 
@@ -330,6 +344,7 @@ func fileExists(p string) bool {
 //   - ?artist= 指定歌手（匹配 song_artists 拆分后的任一歌手）
 //   - ?incomplete=any|artist|language|genre|track 信息不完整筛选（管理后台用）
 //   - ?scope=local|network 本地/网络曲库筛选
+//   - ?lang= / ?genre= 语种/风格精确筛选（1.0.4 管理后台新增）
 //   - ?page= / ?pageSize= 分页（管理后台每页 50 首）
 //
 // 无分页参数时返回完整列表（兼容 TV/手机端旧行为）。
@@ -338,6 +353,8 @@ func handleSongs(w http.ResponseWriter, r *http.Request) {
 	artist := strings.TrimSpace(r.URL.Query().Get("artist"))
 	incomplete := strings.TrimSpace(r.URL.Query().Get("incomplete"))
 	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+	lang := strings.TrimSpace(r.URL.Query().Get("lang"))
+	genre := strings.TrimSpace(r.URL.Query().Get("genre"))
 	pageStr := r.URL.Query().Get("page")
 	pageSizeStr := r.URL.Query().Get("pageSize")
 
@@ -351,6 +368,14 @@ func handleSongs(w http.ResponseWriter, r *http.Request) {
 		// 按拆分后歌手匹配：通过 song_artists 关联表。
 		where = append(where, "s.id IN (SELECT song_id FROM song_artists WHERE artist = ?)")
 		args = append(args, artist)
+	}
+	if lang != "" {
+		where = append(where, "s.language = ?")
+		args = append(args, lang)
+	}
+	if genre != "" {
+		where = append(where, "s.genre = ?")
+		args = append(args, genre)
 	}
 	switch incomplete {
 	case "any":
@@ -390,9 +415,10 @@ func handleSongs(w http.ResponseWriter, r *http.Request) {
 	sqlTail := " ORDER BY s.play_count DESC, s.id DESC"
 	if paged {
 		sqlTail += fmt.Sprintf(" LIMIT %d OFFSET %d", pageSize, (page-1)*pageSize)
-	} else {
-		sqlTail += " LIMIT 500"
 	}
+	// 无分页参数时返回完整列表（不再 LIMIT 500）：
+	// 手机/pad 端"歌名点歌/分类点歌/最新入库"等入口依赖全量曲库做拼音过滤与分类统计，
+	// 硬编码 LIMIT 500 会导致只显示前 500 首、其余歌曲无法点到的严重 bug。
 
 	rows, err := db.DB.Query("SELECT "+songCols+" FROM songs s WHERE "+whereSQL+sqlTail, args...)
 	if err != nil {
@@ -444,6 +470,21 @@ func handleDeleteSong(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// 引用检查（1.0.4）：歌曲在队列（等待/播放）或历史/收藏中被引用时，
+	// 默认拒绝删除并返回引用数，前端确认后带 ?force=1 再删。
+	if r.URL.Query().Get("force") != "1" {
+		var qn, hn, fn int64
+		db.DB.QueryRow("SELECT COUNT(*) FROM queue WHERE song_id=? AND status IN ('waiting','playing')", id).Scan(&qn)
+		db.DB.QueryRow("SELECT COUNT(*) FROM history WHERE song_id=?", id).Scan(&hn)
+		db.DB.QueryRow("SELECT COUNT(*) FROM favorites WHERE song_id=?", id).Scan(&fn)
+		if qn > 0 || hn > 0 || fn > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": "歌曲仍被引用，请确认后再删除",
+				"refs":  map[string]int64{"queue": qn, "history": hn, "favorites": fn},
+			})
+			return
+		}
+	}
 	// 必须走事务级联删除：queue/history/favorites/song_artists 引用 songs 的外键
 	// 会挡住直接 DELETE（点过/唱过的歌 queue、song_artists 里必有记录），
 	// 不清理关联表会导致外键约束失败、删除接口 500。
@@ -462,15 +503,50 @@ func handleUpdateSong(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Title    string `json:"title"`
-		Artist   string `json:"artist"`
-		Language string `json:"language"`
-		Genre    string `json:"genre"`
+		Title       string `json:"title"`
+		Artist      string `json:"artist"`
+		Language    string `json:"language"`
+		Genre       string `json:"genre"`
+		RenameFiles bool   `json:"renameFiles"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	body.Title = strings.TrimSpace(body.Title)
+	body.Artist = strings.TrimSpace(body.Artist)
+	body.Language = strings.TrimSpace(body.Language)
+	body.Genre = strings.TrimSpace(body.Genre)
+
+	var oldFilename, oldFilepath string
+	if err := db.DB.QueryRow("SELECT filename, filepath FROM songs WHERE id=?", id).Scan(&oldFilename, &oldFilepath); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "歌曲不存在"})
+		return
+	}
+
+	// 同步修改文件名（1.0.4 单曲编辑）：按新的歌手/歌名/语种/风格完整重建，
+	// 库内重名则跳过改名（元数据仍更新），返回 renamed 供前端提示。
+	renamed := false
+	newFilename, newFilepath := oldFilename, oldFilepath
+	if body.RenameFiles {
+		newBase := scanner.BuildFilenameAll(body.Artist, body.Title, body.Language, body.Genre, filepath.Ext(oldFilename))
+		if newBase != oldFilename {
+			var cnt int64
+			db.DB.QueryRow("SELECT COUNT(*) FROM songs WHERE filename=? AND id<>?", newBase, id).Scan(&cnt)
+			if cnt == 0 {
+				newFilepath = filepath.Join(filepath.Dir(oldFilepath), newBase)
+				if err := os.Rename(oldFilepath, newFilepath); err != nil {
+					logger.Warn("API", fmt.Sprintf("单曲改名失败 %d %s -> %s: %s", id, oldFilename, newBase, err.Error()))
+				} else {
+					renamed = true
+					newFilename = newBase
+				}
+			} else {
+				logger.Warn("API", fmt.Sprintf("单曲改名冲突 %d: %s 已存在", id, newBase))
+			}
+		}
+	}
+
 	if _, err := db.DB.Exec(
-		"UPDATE songs SET title=?, artist=?, language=?, genre=? WHERE id=?",
-		body.Title, body.Artist, body.Language, body.Genre, id,
+		"UPDATE songs SET title=?, artist=?, language=?, genre=?, filename=?, filepath=? WHERE id=?",
+		body.Title, body.Artist, body.Language, body.Genre, newFilename, newFilepath, id,
 	); err != nil {
 		logger.Error("API", "更新歌曲失败: "+err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "更新失败"})
@@ -478,10 +554,13 @@ func handleUpdateSong(w http.ResponseWriter, r *http.Request) {
 	}
 	// artist 可能变化（& 拆分），同步重建歌手关联表。
 	scanner.RebuildSongArtists()
-	writeOK(w, map[string]bool{"ok": true})
+	writeOK(w, map[string]any{"ok": true, "renamed": renamed, "filename": newFilename})
 }
 
-// handleSongsBatch 批量设置语种/风格（管理后台多选后统一修改）。
+// handleSongsBatch 批量设置语种/风格（1.0.4 增强）：
+//   - renameFiles=true 时同步修改文件名（歌手 - 歌名 - 语种 - 风格）
+//   - preview=true 只返回预览（新文件名/冲突/引用统计），不落库不改文件
+//   - 返回 refs（队列 waiting/playing + 历史 + 收藏引用数）供前端提示确认
 func handleSongsBatch(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		IDs         []int64 `json:"ids"`
@@ -489,6 +568,8 @@ func handleSongsBatch(w http.ResponseWriter, r *http.Request) {
 		Language    string  `json:"language"`
 		SetGenre    bool    `json:"setGenre"`
 		Genre       string  `json:"genre"`
+		RenameFiles bool    `json:"renameFiles"`
+		Preview     bool    `json:"preview"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if len(body.IDs) == 0 {
@@ -499,20 +580,166 @@ func handleSongsBatch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "至少选择语种或风格一项"})
 		return
 	}
+	body.Language = strings.TrimSpace(body.Language)
+	body.Genre = strings.TrimSpace(body.Genre)
+
+	// 1) 读取目标歌曲（含 filepath，改名需要）
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(body.IDs)), ",")
+	args := make([]any, 0, len(body.IDs))
+	for _, id := range body.IDs {
+		args = append(args, id)
+	}
+	rows, err := db.DB.Query("SELECT id, filename, filepath, title, artist, language, genre FROM songs WHERE id IN ("+ph+")", args...)
+	if err != nil {
+		logger.Error("API", "批量查询歌曲失败: "+err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "批量更新失败"})
+		return
+	}
+	type songRow struct {
+		ID       int64
+		Filename string
+		Filepath string
+		Title    string
+		Artist   string
+		Language string
+		Genre    string
+	}
+	var songs []songRow
+	for rows.Next() {
+		var s songRow
+		var artist, lang, genre sql.NullString
+		if err := rows.Scan(&s.ID, &s.Filename, &s.Filepath, &s.Title, &artist, &lang, &genre); err != nil {
+			rows.Close()
+			logger.Error("API", "批量读取歌曲失败: "+err.Error())
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "批量更新失败"})
+			return
+		}
+		s.Artist = artist.String
+		s.Language = lang.String
+		s.Genre = genre.String
+		songs = append(songs, s)
+	}
+	rows.Close()
+
+	// 2) 引用统计：队列(等待/播放) + 历史 + 收藏
+	refs := map[string]int64{"queue": 0, "history": 0, "favorites": 0}
+	refStmt, err := db.DB.Prepare("SELECT COUNT(*) FROM queue WHERE song_id=? AND status IN ('waiting','playing')")
+	if err == nil {
+		defer refStmt.Close()
+		for _, s := range songs {
+			var n int64
+			refStmt.QueryRow(s.ID).Scan(&n)
+			refs["queue"] += n
+		}
+	}
+	hisStmt, err := db.DB.Prepare("SELECT COUNT(*) FROM history WHERE song_id=?")
+	if err == nil {
+		defer hisStmt.Close()
+		for _, s := range songs {
+			var n int64
+			hisStmt.QueryRow(s.ID).Scan(&n)
+			refs["history"] += n
+		}
+	}
+	favStmt, err := db.DB.Prepare("SELECT COUNT(*) FROM favorites WHERE song_id=?")
+	if err == nil {
+		defer favStmt.Close()
+		for _, s := range songs {
+			var n int64
+			favStmt.QueryRow(s.ID).Scan(&n)
+			refs["favorites"] += n
+		}
+	}
+
+	// 3) 建立库内 filename -> id 冲突字典（排除自身）
+	filenameOwner := map[string]int64{}
+	allRows, err := db.DB.Query("SELECT id, filename FROM songs")
+	if err == nil {
+		for allRows.Next() {
+			var id int64
+			var fn string
+			allRows.Scan(&id, &fn)
+			filenameOwner[fn] = id
+		}
+		allRows.Close()
+	}
+
+	type renameItem struct {
+		ID  int64  `json:"id"`
+		Old string `json:"old"`
+		New string `json:"new"`
+	}
+	var previews, conflicts []renameItem
+	if body.RenameFiles {
+		for _, s := range songs {
+			newBase := scanner.BuildFilename(s.Filename, body.SetLanguage, body.Language, body.SetGenre, body.Genre)
+			if newBase == s.Filename {
+				continue // 文件名无需变化
+			}
+			item := renameItem{ID: s.ID, Old: s.Filename, New: newBase}
+			if owner, ok := filenameOwner[newBase]; ok && owner != s.ID {
+				conflicts = append(conflicts, item)
+				continue
+			}
+			previews = append(previews, item)
+		}
+	}
+
+	if body.Preview {
+		writeOK(w, map[string]any{
+			"preview":   previews,
+			"conflicts": conflicts,
+			"refs":      refs,
+			"total":     len(songs),
+		})
+		return
+	}
+
+	// 4) 执行：文件改名 + 事务更新 DB
 	tx, err := db.DB.Begin()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "批量更新失败"})
 		return
 	}
 	defer tx.Rollback()
-	stmt, err := tx.Prepare("UPDATE songs SET language = CASE WHEN ? THEN ? ELSE language END, genre = CASE WHEN ? THEN ? ELSE genre END WHERE id = ?")
+	stmt, err := tx.Prepare("UPDATE songs SET language=?, genre=?, filename=?, filepath=? WHERE id=?")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "批量更新失败"})
 		return
 	}
 	defer stmt.Close()
-	for _, id := range body.IDs {
-		if _, err := stmt.Exec(body.SetLanguage, body.Language, body.SetGenre, body.Genre, id); err != nil {
+	renamed, skipped := 0, 0
+	for _, s := range songs {
+		newBase, newPath := s.Filename, s.Filepath
+		if body.RenameFiles {
+			base := scanner.BuildFilename(s.Filename, body.SetLanguage, body.Language, body.SetGenre, body.Genre)
+			if base != s.Filename {
+				if owner, ok := filenameOwner[base]; ok && owner != s.ID {
+					skipped++ // 目标名被占用，仅更新元数据字段（跳过改名）
+					newBase = s.Filename
+					newPath = s.Filepath
+				} else {
+					newPath = filepath.Join(filepath.Dir(s.Filepath), base)
+					if err := os.Rename(s.Filepath, newPath); err != nil {
+						logger.Warn("API", fmt.Sprintf("改名失败 song=%d %s -> %s: %s", s.ID, s.Filename, base, err.Error()))
+						skipped++
+						newBase = s.Filename
+						newPath = s.Filepath
+					} else {
+						renamed++
+						newBase = base
+					}
+				}
+			}
+		}
+		langVal, genreVal := s.Language, s.Genre
+		if body.SetLanguage {
+			langVal = body.Language
+		}
+		if body.SetGenre {
+			genreVal = body.Genre
+		}
+		if _, err := stmt.Exec(langVal, genreVal, newBase, newPath, s.ID); err != nil {
 			logger.Error("API", "批量更新歌曲失败: "+err.Error())
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "批量更新失败"})
 			return
@@ -523,7 +750,68 @@ func handleSongsBatch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "批量更新失败"})
 		return
 	}
-	writeOK(w, map[string]bool{"ok": true})
+	writeOK(w, map[string]any{"ok": true, "renamed": renamed, "skipped": skipped, "refs": refs})
+}
+
+// handleSongsIds 返回当前筛选条件下的全部歌曲 id（不分页、不受 500 条上限约束），
+// 供管理后台"全选当前筛选结果"批量操作使用。筛选参数与 handleSongs 一致。
+func handleSongsIds(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	incomplete := strings.TrimSpace(r.URL.Query().Get("incomplete"))
+	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+	lang := strings.TrimSpace(r.URL.Query().Get("lang"))
+	genre := strings.TrimSpace(r.URL.Query().Get("genre"))
+
+	where := []string{"1=1"}
+	args := []any{}
+	if q != "" {
+		where = append(where, "(title LIKE ? OR artist LIKE ?)")
+		args = append(args, "%"+q+"%", "%"+q+"%")
+	}
+	if lang != "" {
+		where = append(where, "s.language = ?")
+		args = append(args, lang)
+	}
+	if genre != "" {
+		where = append(where, "s.genre = ?")
+		args = append(args, genre)
+	}
+	switch incomplete {
+	case "any":
+		where = append(where, "(artist IS NULL OR artist='' OR language IS NULL OR language='' OR genre IS NULL OR genre='')")
+	case "artist":
+		where = append(where, "(artist IS NULL OR artist='')")
+	case "language":
+		where = append(where, "(language IS NULL OR language='')")
+	case "genre":
+		where = append(where, "(genre IS NULL OR genre='')")
+	case "track":
+		where = append(where, "(audio_tracks IS NULL OR audio_tracks < 2)")
+	}
+	switch scope {
+	case "local":
+		where = append(where, "s.filename NOT LIKE 'net/%' AND s.filename NOT LIKE 'net_net/%'")
+	case "network":
+		where = append(where, "(s.filename LIKE 'net/%' OR s.filename LIKE 'net_net/%')")
+	}
+	rows, err := db.DB.Query("SELECT s.id FROM songs s WHERE "+strings.Join(where, " AND "), args...)
+	if err != nil {
+		logger.Error("API", "查询筛选歌曲 id 失败: "+err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "查询失败"})
+		return
+	}
+	defer rows.Close()
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			logger.Error("API", "读取筛选歌曲 id 失败: "+err.Error())
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "查询失败"})
+			return
+		}
+		ids = append(ids, id)
+	}
+	writeOK(w, map[string]any{"ids": ids})
 }
 
 // ---------- 歌手 / 历史 / 榜单 / 收藏 ----------
@@ -559,16 +847,41 @@ func handleArtists(w http.ResponseWriter, r *http.Request) {
 }
 
 // singerAvatarExists 判断歌手头像文件（/singer/<歌手名>.jpg|png|jpeg|webp）是否存在。
+// 1.0.4：按 SINGER_DIR 多目录顺序查找。
 func singerAvatarExists(artist string) bool {
-	if cfg == nil || cfg.SingerDir == "" {
+	if cfg == nil || len(cfg.SingerDirs) == 0 {
 		return false
 	}
-	for _, ext := range []string{".jpg", ".png", ".jpeg", ".webp"} {
-		if fileExists(filepath.Join(cfg.SingerDir, artist+ext)) {
-			return true
+	for _, dir := range cfg.SingerDirs {
+		for _, ext := range []string{".jpg", ".png", ".jpeg", ".webp"} {
+			if fileExists(filepath.Join(dir, artist+ext)) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// singerAvatarHandler 歌手头像多目录查找：按 SINGER_DIR 列表顺序返回匹配文件。
+// 前端 URL 格式 /singer/<歌手名>.webp|.jpg|.png（失败自动降级）。
+func singerAvatarHandler(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/singer/")
+	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") {
+		http.NotFound(w, r)
+		return
+	}
+	if cfg == nil {
+		http.NotFound(w, r)
+		return
+	}
+	for _, dir := range cfg.SingerDirs {
+		p := filepath.Join(dir, name)
+		if fileExists(p) {
+			http.ServeFile(w, r, p)
+			return
+		}
+	}
+	http.NotFound(w, r)
 }
 
 // ---------- 语种/风格预设 ----------
@@ -781,7 +1094,30 @@ func handleRemoveFavorite(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 扫描 / 统计 / 音轨切换 ----------
 
+// historyRetainCount 历史记录保留条数（1.0.4）：常唱榜只需近期数据，保留过多
+// 会让 history 表无限膨胀、聚合变慢。按 id 保留最新 N 条。
+const historyRetainCount = 5000
+
+// cleanupHistory 删除超出保留条数的历史记录。
+func cleanupHistory() {
+	res, err := db.DB.Exec("DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY id DESC LIMIT ?)", historyRetainCount)
+	if err != nil {
+		logger.Warn("DB", "历史记录清理失败: "+err.Error())
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		logger.Info("DB", fmt.Sprintf("历史记录清理完成，删除 %d 条（保留最近 %d 条）", n, historyRetainCount))
+	}
+}
+
+// handleScan 触发全库扫描。1.0.4 加互斥：同一时间只允许一个扫描任务在跑，
+// 重复触发直接返回"扫描进行中"，避免并发扫描互相竞争 ffprobe 资源。
 func handleScan(w http.ResponseWriter, r *http.Request) {
+	if !scanMu.TryLock() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "扫描进行中，请稍后再试"})
+		return
+	}
+	defer scanMu.Unlock()
 	result := sc.ScanLibrary()
 	writeOK(w, map[string]any{
 		"ok":      result.Error == "",
@@ -832,7 +1168,7 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		"songCount":  songCount,
 		"queueCount": queueCount,
 		"totalPlays": totalPlays,
-		"mvDir":      cfg.MVDir,
+		"mvDir":      strings.Join(cfg.MVDirs, ":"),
 	})
 }
 
@@ -1438,7 +1774,46 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 单音轨/未指定：源文件直传，支持 Range。
-	serveRange(w, r, song.Filepath, "video/mp4")
+	// 按扩展名返回正确 Content-Type：AV1 的 MKV/WebM 源若固定标成 video/mp4，
+	// VLC 等播放器会按 MP4 解析器解析 MKV/WebM 数据导致起播失败、误回退 HLS。
+	serveRange(w, r, song.Filepath, contentTypeFor(song.Filepath))
+}
+
+// contentTypeFor 根据文件扩展名返回合适的 Content-Type。
+// 避免直连模式所有文件一律标 video/mp4（AV1 的 MKV/WebM 源会被 VLC 按 MP4 解析而失败）。
+func contentTypeFor(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".mkv":
+		return "video/x-matroska"
+	case ".webm":
+		return "video/webm"
+	case ".avi":
+		return "video/x-msvideo"
+	case ".mov":
+		return "video/quicktime"
+	case ".ts", ".m2ts":
+		return "video/mp2t"
+	case ".mp4", ".m4v", ".m4a":
+		return "video/mp4"
+	case ".flv":
+		return "video/x-flv"
+	case ".mpg", ".mpeg":
+		return "video/mpeg"
+	case ".wmv":
+		return "video/x-ms-wmv"
+	case ".flac":
+		return "audio/flac"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".aac":
+		return "audio/aac"
+	case ".wav":
+		return "audio/wav"
+	case ".ogg":
+		return "audio/ogg"
+	default:
+		return "video/mp4"
+	}
 }
 
 func streamSingleTrack(w http.ResponseWriter, r *http.Request, filepath string, track int64, startMs int64) {
@@ -1467,6 +1842,11 @@ func streamSingleTrack(w http.ResponseWriter, r *http.Request, filepath string, 
 		"pipe:1",
 	)
 	cmd := exec.Command(binpath.Resolve("ffmpeg"), args...)
+	// 直连转码共用全局并发信号量（1.0.4）：限制多客户端同时直连多音轨/strm 时的 ffmpeg 进程数。
+	if hls.TranscodeSem != nil {
+		hls.TranscodeSem <- struct{}{}
+		defer func() { <-hls.TranscodeSem }()
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)

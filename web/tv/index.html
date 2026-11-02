@@ -246,12 +246,25 @@ body.fs #eq-pop{right:18px}
 const player=document.getElementById('player');
 const idleEl=document.getElementById('idle');
 const connEl=document.getElementById('conn');
-let ws=null, queueData=[], currentQueueId=null, currentSongId=null, voiceMode='original', wsTimer=null;
+let ws=null, queueData=[], currentQueueId=null, currentSongId=null, voiceMode='original', wsTimer=null, wsHealthTimer=null;
+let stallTimer=null, stallRetry=0, stalledOut=false, currentStreamUrl=null;
 
 function connectWS(){
   const proto=location.protocol==='https:'?'wss://':'ws://';
   ws=new WebSocket(proto+location.host+'/ws');
-  ws.onopen=()=>{ connEl.textContent='播放端在线'; connEl.classList.add('on'); };
+  ws.onopen=()=>{ connEl.textContent='播放端在线'; connEl.classList.add('on');
+    // ws 主动健康检查：TCP 假活（安卓省电冻结/网络半开）时 onclose 迟迟不触发，
+    // 定时探测连接状态，异常即主动断开重连，避免点歌进"黑洞"
+    clearInterval(wsHealthTimer);
+    wsHealthTimer=setInterval(()=>{
+      if(!ws || ws.readyState!==WebSocket.OPEN){
+        connEl.textContent='连接异常，重连中…'; connEl.classList.remove('on');
+        clearInterval(wsHealthTimer);
+        try{ ws.close(); }catch(e){}
+        connectWS();
+      }
+    },10000);
+  };
   ws.onmessage=(ev)=>{
     let msg; try{ msg=JSON.parse(ev.data); }catch(e){ return; }
     if(msg.type==='queue'&&msg.data){ queueData=msg.data; handleQueue(); }
@@ -259,9 +272,11 @@ function connectWS(){
     if(msg.type==='effect') playEffect(msg.effect, msg.nickname);
   };
   ws.onclose=()=>{ connEl.textContent='已断开，重连中…'; connEl.classList.remove('on');
-    clearTimeout(wsTimer); wsTimer=setTimeout(connectWS,2500); };
+    clearTimeout(wsTimer); clearInterval(wsHealthTimer);
+    wsTimer=setTimeout(connectWS,2500); };
 }
 connectWS();
+armStallWatchdog();
 
 // 全屏切换：进入全屏隐藏列表与控制条，退出恢复
 document.addEventListener('fullscreenchange', ()=>{
@@ -351,7 +366,34 @@ function handleQueue(){
 // 播放降级链：hls.js(MSE) → 原生 HLS(m3u8，安卓/电视浏览器普遍支持) → /stream 直出流。
 // 网络/媒体错误最多重试 3 次，仍失败则降级，避免无限重试导致"一直不播放"。
 let hls = null, hlsErr = 0;
+// 播放卡缓冲看门狗：video 触发 waiting/stalled 后 8s 无进展（分片迟迟不出/网络断流）
+// → 重载当前 HLS 流（转码完成/已缓存后秒开）；连续 3 次仍卡 → 降级 /stream 直连。
+function armStallWatchdog(){
+  const clearStall=()=>{ if(stallTimer){ clearTimeout(stallTimer); stallTimer=null; } };
+  const stallFire=()=>{
+    stallTimer=null;
+    if(stalledOut){ // 已降级直连：只对原生流重试一次，避免死循环
+      stalledOut=false;
+      try{ player.load(); player.play().catch(()=>{}); }catch(e){}
+      return;
+    }
+    stallRetry++;
+    if(stallRetry>3){
+      stallRetry=0;
+      fallbackStream();
+      return;
+    }
+    console.log('[tv] HLS 缓冲超时，重载当前流');
+    const url=currentStreamUrl || (currentSongId?`/hls/${currentSongId}/master.m3u8`:'');
+    if(url) loadPlayer(url);
+  };
+  player.addEventListener('playing', ()=>{ clearStall(); stallRetry=0; });
+  player.addEventListener('canplay', ()=>{ clearStall(); });
+  player.addEventListener('waiting', ()=>{ if(!stallTimer) stallTimer=setTimeout(stallFire,8000); });
+  player.addEventListener('stalled', ()=>{ if(!stallTimer) stallTimer=setTimeout(stallFire,8000); });
+}
 function loadPlayer(url){
+  currentStreamUrl=url;
   if(hls){ hls.destroy(); hls=null; }
   hlsErr = 0;
   if(window.Hls && Hls.isSupported()){
@@ -395,6 +437,7 @@ function fallbackStream(){
   if(hls){ hls.destroy(); hls=null; }
   if(!currentSongId) return;
   player.src=`/stream/${currentSongId}`;
+  stalledOut=true; // 已降级直连：stall 看门狗只对原生流重试一次，避免死循环
   player.play().catch(()=>{});
 }
 function renderQueue(){
